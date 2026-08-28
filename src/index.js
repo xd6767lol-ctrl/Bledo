@@ -1,4 +1,16 @@
-const { Client, GatewayIntentBits, Events, PermissionsBitField, EmbedBuilder } = require('discord.js');
+// ==== AGREGA ESTO AL PRINCIPIO DE index.js ====
+const express = require('express');
+const app = express();
+const PORT = process.env.PORT || 10000;
+
+app.get('/', (req, res) => res.send('✅ Bot activo — Niño 6,6,6,6'));
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`✅ Puerto abierto — Render me detecta bien`);
+});
+// ==== FIN DE LO QUE AGREGAS ====
+
+// RESTO DE TU CÓDIGO SIGUE IGUAL 👇const { Client, GatewayIntentBits, Events, PermissionsBitField, EmbedBuilder } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
 
