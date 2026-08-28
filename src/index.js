@@ -7,7 +7,7 @@ const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-app.get('/', (req, res) => res.send('Bot Online — Hardban System + AntiNuke + Clear Commands'));
+app.get('/', (req, res) => res.send('Bot Online — Hardban + AntiNuke + Clear + Ping Protection + Fixed Logs'));
 app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
 
 const CONFIG = {
@@ -41,7 +41,7 @@ const client = new Client({
 });
 
 // ==========================================
-// DATA STORAGE
+// DATA STORAGE — ALMACENAMIENTO DE MENSAJES
 // ==========================================
 let lastClearedUserId = null;
 let deletedMessagesLog = [];
@@ -162,12 +162,18 @@ async function logSecurity(guild, user, action, details) {
 }
 
 // ==========================================
-// MESSAGE FILTER
+// PING PROTECTION — DUEÑO EXENTO, BORRA SIN REENVIAR
 // ==========================================
 client.on(Events.MessageCreate, async (msg) => {
     if (msg.author.bot) return;
+    if (!msg.guild) return;
+
+    // Dueño del servidor SIEMPRE exento
+    if (msg.author.id === msg.guild.ownerId) return;
+
+    // Borra menciones everyone sin permiso — SIN reenviar
     if (msg.mentions.everyone && !whitelist.canPingEveryone(msg.author.id)) {
-        try { await msg.delete(); } catch {}
+        try { await msg.delete(); } catch (e) { console.error('Delete error:', e); }
     }
 });
 
@@ -180,6 +186,7 @@ client.once(Events.ClientReady, () => {
     console.log(`Whitelist (Pings): ${whitelist.data.pings.length} entries`);
     console.log(`AntiNuke Admins: ${antinuke.data.admins.length} entries`);
     console.log('Commands Active: hardban, hb, clear, cs, s, lock, whitelist, r');
+    console.log('Log System Fixed — ,s shows deleted messages correctly');
 });
 
 // ==========================================
@@ -191,7 +198,7 @@ client.on(Events.MessageCreate, async (msg) => {
     const cmd = args.shift()?.toLowerCase();
 
     // ======================================
-    // HARDBAN / HB COMMAND — SOLO REACCIÓN 👍
+    // HARDBAN / HB — SOLO REACCIÓN 👍
     // ======================================
     if (cmd === 'hardban' || cmd === 'hb') {
         if (!isOwnerOrAdmin(msg.member)) {
@@ -213,11 +220,8 @@ client.on(Events.MessageCreate, async (msg) => {
             if (userId === msg.guild.ownerId) return msg.reply('You cannot ban the server owner.');
 
             await msg.guild.members.ban(userId, { reason: reason, deleteMessageSeconds: 0 });
-            
-            // ✅ SOLO REACCIONA CON 👍 — SIN MENSAJE DE CONFIRMACIÓN
             await msg.react('👍').catch(() => {});
             return;
-
         } catch (e) {
             console.error('Ban error:', e);
             return msg.reply('Failed to ban the specified user.');
@@ -301,7 +305,7 @@ client.on(Events.MessageCreate, async (msg) => {
     }
 
     // ======================================
-    // ROLE MANAGEMENT (FORMAT BLEED)
+    // ROLE MANAGEMENT
     // ======================================
     if (cmd === 'r') {
         const action = args[0]?.toLowerCase();
@@ -339,7 +343,7 @@ client.on(Events.MessageCreate, async (msg) => {
     }
 
     // ======================================
-    // CLEAR COMMANDS
+    // CLEAR — GUARDA TODO EL CONTENIDO
     // ======================================
     if (cmd === 'c') {
         if (!canUseLockCommands(msg.member)) return msg.reply('Insufficient permissions.');
@@ -350,20 +354,28 @@ client.on(Events.MessageCreate, async (msg) => {
         try {
             await msg.delete();
             const messages = await msg.channel.messages.fetch({ limit: amount });
+            
+            // ✅ GUARDA TODO: CONTENIDO, AUTORES, ADJUNTOS
             lastClearedMessages = Array.from(messages.values()).map(m => ({
                 id: m.id,
-                author: m.author,
-                content: m.content,
+                authorTag: m.author.tag,
+                authorId: m.author.id,
+                content: m.content || 'No text content',
                 attachments: m.attachments.map(a => ({ url: a.url, name: a.name })),
                 timestamp: m.createdAt
             }));
+            
             if (lastClearedMessages.length > 0) {
-                lastClearedUserId = lastClearedMessages[0].author.id;
+                lastClearedUserId = lastClearedMessages[0].authorId;
                 deletedMessagesLog = [...lastClearedMessages, ...deletedMessagesLog].slice(0, 50);
             }
+            
             await msg.channel.bulkDelete(messages, true);
-        } catch (e) { console.error('Clear error:', e); }
-        return;
+            return msg.reply(`Cleared ${messages.size} messages. Use ,s to view content.`);
+        } catch (e) { 
+            console.error('Clear error:', e); 
+            return msg.reply('Failed to clear messages.');
+        }
     }
 
     if (cmd === 'cs') {
@@ -374,17 +386,23 @@ client.on(Events.MessageCreate, async (msg) => {
         return msg.reply('Message history cleared.');
     }
 
+    // ======================================
+    // S — MUESTRA LOS MENSAJES ELIMINADOS ✅ CORREGIDO
+    // ======================================
     if (cmd === 's') {
         if (!canUseLockCommands(msg.member)) return msg.reply('Insufficient permissions.');
+        
         if (!lastClearedMessages || lastClearedMessages.length === 0) {
-            return msg.reply('No deleted messages recorded.');
+            return msg.reply('No deleted messages recorded. Use ,c first.');
         }
+
         try {
             let output = `Deleted Messages (${lastClearedMessages.length}):\n\n`;
             const files = [];
+
             lastClearedMessages.forEach((m, i) => {
-                output += `${i + 1}. ${m.author.tag} — ${m.timestamp.toLocaleString('es-MX')}\n`;
-                output += `${m.content || '(No content)'}\n`;
+                output += `${i + 1}. ${m.authorTag} — ${new Date(m.timestamp).toLocaleString('es-MX')}\n`;
+                output += `Content: ${m.content}\n`; // ✅ MUESTRA EL CONTENIDO REAL
                 if (m.attachments.length > 0) {
                     m.attachments.forEach(a => {
                         output += `Attachment: ${a.name} — ${a.url}\n`;
@@ -392,14 +410,18 @@ client.on(Events.MessageCreate, async (msg) => {
                 }
                 output += '----------------------------------------\n';
             });
-            const images = lastClearedMessages.flatMap(m => m.attachments).filter(a => {
-                return /\.(png|jpg|jpeg|gif|webp)$/i.test(a.url);
-            });
+
+            // Manejar imágenes
+            const images = lastClearedMessages.flatMap(m => m.attachments).filter(a => 
+                /\.(png|jpg|jpeg|gif|webp)$/i.test(a.url)
+            );
             if (images.length > 0) {
                 for (const img of images.slice(0, 5)) {
                     files.push(new AttachmentBuilder(img.url, { name: img.name }));
                 }
             }
+
+            // Enviar como archivo si es muy largo
             if (output.length > 1900) {
                 const fileName = `deleted_messages_${Date.now()}.txt`;
                 fs.writeFileSync(fileName, output);
@@ -417,7 +439,10 @@ client.on(Events.MessageCreate, async (msg) => {
                     await msg.channel.send(output);
                 }
             }
-        } catch (e) { console.error('Log error:', e); }
+        } catch (e) { 
+            console.error('Log error:', e); 
+            return msg.reply('Failed to retrieve message logs.');
+        }
         return;
     }
 });
