@@ -10,7 +10,7 @@ const PORT = process.env.PORT || 10000;
 // ==========================================
 // SERVIDOR PARA RENDER
 // ==========================================
-app.get('/', (req, res) => res.send('✅ Bot activo — ,c [n] + ,cs + ,s + FORMATO BLEED + WHITELIST + ANTINUKE'));
+app.get('/', (req, res) => res.send('✅ Bot activo — + ,hb BAN + CORREGIDO + FORMATO BLEED + WHITELIST + ANTINUKE'));
 app.listen(PORT, '0.0.0.0', () => console.log(`✅ Puerto listo — Bot estable`));
 
 // ==========================================
@@ -49,9 +49,9 @@ const client = new Client({
 // ==========================================
 // ALMACENAMIENTO DE DATOS EN MEMORIA
 // ==========================================
-let lastClearedUserId = null;   // ID de la última persona cuyos mensajes se borraron
-let deletedMessagesLog = [];    // Registro de mensajes borrados
-let lastClearedMessages = [];   // Mensajes que se borraron con el último comando ,c
+let lastClearedUserId = null;
+let deletedMessagesLog = [];
+let lastClearedMessages = [];
 
 // ==========================================
 // SISTEMA DE WHITELIST (all + pings)
@@ -88,7 +88,7 @@ class WhitelistManager {
 const whitelist = new WhitelistManager();
 
 // ==========================================
-// SISTEMA ANTINUKE
+// SISTEMA ANTINUKE — ADMINS
 // ==========================================
 class AntiNukeManager {
     constructor() { this.data = this.load(); this.actionTracker = {}; }
@@ -101,6 +101,16 @@ class AntiNukeManager {
     save() { fs.writeFileSync(CONFIG.antinukeFile, JSON.stringify(this.data, null, 4)); }
     isWhitelisted(userId) { return this.data.whitelist.includes(userId) || whitelist.isAll(userId); }
     isAdmin(userId) { return this.data.admins.includes(userId); }
+    addAdmin(userId) {
+        if (!this.data.admins.includes(userId)) {
+            this.data.admins.push(userId);
+            this.save();
+        }
+    }
+    removeAdmin(userId) {
+        this.data.admins = this.data.admins.filter(id => id !== userId);
+        this.save();
+    }
     checkLimit(guildId, userId) {
         if (this.isAdmin(userId) || whitelist.isAll(userId)) return { allowed: true, count: 0, limit: '∞' };
         if (!this.isWhitelisted(userId)) return { allowed: false, count: 1, limit: 0, noPermit: true };
@@ -114,6 +124,15 @@ class AntiNukeManager {
     }
 }
 const antinuke = new AntiNukeManager();
+
+// ==========================================
+// VERIFICAR SI PUEDE USAR COMANDOS DE ADMIN
+// ==========================================
+function isOwnerOrAdmin(member) {
+  if (member.id === member.guild.ownerId) return true;
+  if (antinuke.isAdmin(member.id)) return true;
+  return false;
+}
 
 // ==========================================
 // LOCK/UNLOCK PERMISSIONS
@@ -167,6 +186,7 @@ client.on(Events.MessageCreate, async (msg) => {
 client.once(Events.ClientReady, () => {
     console.log(`✅ Bot listo — ${client.user.tag}`);
     console.log(`🌟 Whitelist ALL: ${whitelist.data.all.length} | 🔔 PINGS: ${whitelist.data.pings.length}`);
+    console.log(`🛡️ Admins Antinuke: ${antinuke.data.admins.length} | 🔨 Comando ,hb activo`);
     console.log(`🧹 Limpieza: ,c [n] | ,cs | ,s`);
 });
 
@@ -177,6 +197,58 @@ client.on(Events.MessageCreate, async (msg) => {
     if (msg.author.bot || !msg.content.startsWith(CONFIG.prefix)) return;
     const args = msg.content.slice(CONFIG.prefix.length).trim().split(/\s+/);
     const cmd = args.shift()?.toLowerCase();
+
+    // 🔨 COMANDO DE BAN — ,hb ✅ NUEVO
+    if (cmd === 'hb') {
+        // Verificar permiso: SOLO Owner o Admin del antinuke
+        if (!isOwnerOrAdmin(msg.member)) {
+            return msg.reply('❌ No tienes admin, pídele a un owner que te dé pito.');
+        }
+        const objetivo = args[0];
+        if (!objetivo) {
+            return msg.reply('❌ Uso: `,hb @usuario` o `,hb ID`');
+        }
+        try {
+            // Buscar usuario por mención o ID
+            let usuarioId = null;
+            const mObjetivo = objetivo.match(/^<@!?(\d+)>$/);
+            if (mObjetivo) usuarioId = mObjetivo[1];
+            else if (/^\d+$/.test(objetivo)) usuarioId = objetivo;
+            else return msg.reply('❌ Menciona a un usuario o pon su ID.');
+
+            // Verificar que no se banee a sí mismo ni al owner
+            if (usuarioId === msg.author.id) return msg.reply('❌ No te puedes banear a ti mismo.');
+            if (usuarioId === msg.guild.ownerId) return msg.reply('❌ No puedes banear al owner.');
+
+            // BANEAR
+            await msg.guild.members.ban(usuarioId, { reason: `Baneado por ${msg.author.tag}`, deleteMessageSeconds: 0 });
+            return msg.reply(`✅ <@${usuarioId}> ha sido baneado.`);
+        } catch (e) {
+            console.error('Error baneando:', e);
+            return msg.reply('❌ No pude banear a ese usuario.');
+        }
+    }
+
+    // 🛡️ COMANDOS PARA ADMIN DEL ANTINUKE
+    if (cmd === 'antinuke') {
+        if (!isOwnerOrAdmin(msg.member)) {
+            return msg.reply('❌ No tienes admin, pídele a un owner que te dé pito.');
+        }
+        const accion = args[0]?.toLowerCase();
+        const id = args[1];
+        if (accion === 'addadmin' && id) {
+            antinuke.addAdmin(id);
+            return msg.reply(`✅ <@${id}> agregado como admin del antinuke.`);
+        }
+        if (accion === 'removeadmin' && id) {
+            antinuke.removeAdmin(id);
+            return msg.reply(`✅ <@${id}> eliminado de admins del antinuke.`);
+        }
+        if (accion === 'listadmins') {
+            return msg.reply(`🛡️ Admins del antinuke: ${antinuke.data.admins.map(i => `<@${i}>`).join(', ') || 'Nadie'}`);
+        }
+        return msg.reply('❌ Uso: `,antinuke addadmin <ID>` | `,antinuke removeadmin <ID>` | `,antinuke listadmins`');
+    }
 
     // 🔒 LOCK / UNLOCK
     if (cmd === 'lock' || cmd === 'papi') {
@@ -264,7 +336,6 @@ client.on(Events.MessageCreate, async (msg) => {
     }
 
     // 🧹 COMANDOS DE LIMPIEZA
-    // ,c [cantidad] — Borra N mensajes
     if (cmd === 'c') {
         if (!canUseLockCommands(msg.member)) return msg.reply('🚫 No tienes permiso.');
         const cantidad = parseInt(args[0]);
@@ -272,11 +343,8 @@ client.on(Events.MessageCreate, async (msg) => {
             return msg.reply('❌ Uso: `,c 50` (número entre 1 y 100)');
         }
         try {
-            // Borrar el mensaje del comando primero
             await msg.delete();
-            // Obtener mensajes antes de borrar para guardar el log
             const mensajes = await msg.channel.messages.fetch({ limit: cantidad });
-            // Guardar datos para el log
             lastClearedMessages = Array.from(mensajes.values()).map(m => ({
                 id: m.id,
                 autor: m.author,
@@ -288,13 +356,11 @@ client.on(Events.MessageCreate, async (msg) => {
                 lastClearedUserId = lastClearedMessages[0].autor.id;
                 deletedMessagesLog = [...lastClearedMessages, ...deletedMessagesLog].slice(0, 50);
             }
-            // Borrar los mensajes
             await msg.channel.bulkDelete(mensajes, true);
         } catch (e) { console.error('Error borrando:', e); }
         return;
     }
 
-    // 🧹 ,cs — Borra el historial/log de mensajes borrados
     if (cmd === 'cs') {
         if (!canUseLockCommands(msg.member)) return msg.reply('🚫 No tienes permiso.');
         deletedMessagesLog = [];
@@ -303,14 +369,13 @@ client.on(Events.MessageCreate, async (msg) => {
         return msg.reply('✅ Historial de mensajes borrados limpiado.');
     }
 
-    // 🔍 ,s — Muestra lo que se borró antes
+    // 🔍 ,s — CORREGIDO ✅
     if (cmd === 's') {
         if (!canUseLockCommands(msg.member)) return msg.reply('🚫 No tienes permiso.');
         if (!lastClearedMessages || lastClearedMessages.length === 0) {
             return msg.reply('❌ No hay mensajes borrados registrados.');
         }
         try {
-            // Preparar texto del log
             let texto = `📋 **Últimos mensajes borrados (${lastClearedMessages.length}):**\n\n`;
             const archivos = [];
             lastClearedMessages.forEach((m, i) => {
@@ -323,17 +388,18 @@ client.on(Events.MessageCreate, async (msg) => {
                 }
                 texto += '---\n';
             });
-            // Si hay imágenes, mandarlas como archivos
-            const imagenes = lastClearedMessages.flatMap(m => m.adjuntos.filter(a => /\.(png|jpg|jpeg|gif|webp)$/i.test(a.url))));
+
+            const imagenes = lastClearedMessages.flatMap(m => m.adjuntos).filter(a => {
+                return /\.(png|jpg|jpeg|gif|webp)$/i.test(a.url);
+            });
+
             if (imagenes.length > 0) {
                 for (const img of imagenes.slice(0, 5)) {
                     archivos.push(new AttachmentBuilder(img.url, { name: img.nombre }));
                 }
             }
-            // Mandar el log
+
             if (texto.length > 1900) {
-                const fs = require('fs');
-                const path = require('path');
                 const nombreArchivo = `borrados_${Date.now()}.txt`;
                 fs.writeFileSync(nombreArchivo, texto);
                 const archivo = new AttachmentBuilder(nombreArchivo);
