@@ -1,39 +1,47 @@
-// ==== AGREGA ESTO AL PRINCIPIO DE index.js ====
+// ==========================================
+// PASO 1: PRIMERO IMPORTAR TODO DE DISCORD
+// ==========================================
+const { Client, GatewayIntentBits, Events, PermissionsBitField, EmbedBuilder } = require('discord.js');
+const fs = require('fs');
+const path = require('path');
+
+// ==========================================
+// PASO 2: SERVIDOR DE EXPRESS (para Render)
+// ==========================================
 const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-app.get('/', (req, res) => res.send('✅ Bot activo — Niño 6,6,6,6'));
+app.get('/', (req, res) => res.send('✅ Niño 6,6,6,6 — Activo y Protegiendo Roles'));
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`✅ Puerto abierto — Render me detecta bien`);
+  console.log(`✅ Puerto listo — Bot estable en Render`);
 });
-// ==== FIN DE LO QUE AGREGAS ====
 
-// RESTO DE TU CÓDIGO SIGUE IGUAL 👇const { Client, GatewayIntentBits, Events, PermissionsBitField, EmbedBuilder } = require('discord.js');
-const fs = require('fs');
-const path = require('path');
-
-// Configuración
+// ==========================================
+// PASO 3: CONFIGURACIÓN
+// ==========================================
 const CONFIG = {
-token: process.env.DISCORD_TOKEN,
-    prefix: ',',
-    whitelistFile: './whitelist.json',
-    // Roles que el bot NUNCA quitará (protección para admins/owner)
-    protectedRoles: ['ADMINISTRATOR'], // o poner IDs específicos: ['123456789', '987654321']
-    // Canal donde se enviarán logs de seguridad (opcional, puede ser null)
-    logChannel: 'seguridad' // nombre del canal o null para desactivar
+  token: process.env.DISCORD_TOKEN,
+  prefix: ',',
+  whitelistFile: './whitelist.json',
+  // Roles que el bot NUNCA quitará (protección para admins/owner)
+  protectedRoles: ['ADMINISTRATOR'],
+  // Canal donde se enviarán logs de seguridad (opcional, puede ser null)
+  logChannel: 'seguridad'
 };
 
-// Intents necesarios
+// ==========================================
+// PASO 4: INICIAR CLIENTE DE DISCORD
+// ==========================================
 const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMembers,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildModeration // Para audit logs
-    ]
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildModeration
+  ]
 });
 
 // ==================== SISTEMA DE WHITELIST ====================
@@ -70,14 +78,10 @@ class WhitelistManager {
         const userData = guildData[userId];
         if (!userData) return false;
 
-        // Si es "all", puede dar cualquier rol
         if (userData === 'all') return true;
-        
-        // Si es array, verificar si el rol específico está permitido
         if (Array.isArray(userData)) {
             return roleId ? userData.includes(roleId) : true;
         }
-        
         return false;
     }
 
@@ -85,8 +89,6 @@ class WhitelistManager {
         if (!this.data[guildId]) {
             this.data[guildId] = {};
         }
-        
-        // Si ya existe y es array, agregar el nuevo rol
         if (Array.isArray(this.data[guildId][userId]) && Array.isArray(roles)) {
             roles.forEach(role => {
                 if (!this.data[guildId][userId].includes(role)) {
@@ -96,7 +98,6 @@ class WhitelistManager {
         } else {
             this.data[guildId][userId] = roles;
         }
-        
         this.save();
     }
 
@@ -118,16 +119,15 @@ const whitelist = new WhitelistManager();
 
 // ==================== FUNCIONES DE SEGURIDAD ====================
 
-async function getAuditLogEntry(guild, targetId, action = 24) { // 24 = MEMBER_ROLE_UPDATE
+async function getAuditLogEntry(guild, targetId, action = 24) {
     try {
         const auditLogs = await guild.fetchAuditLogs({
             limit: 10,
             type: action
         });
-        
         return auditLogs.entries.find(entry => 
             entry.targetId === targetId && 
-            Date.now() - entry.createdTimestamp < 10000 // Últimos 10 segundos
+            Date.now() - entry.createdTimestamp < 10000
         );
     } catch (error) {
         console.error('Error obteniendo audit log:', error);
@@ -137,7 +137,6 @@ async function getAuditLogEntry(guild, targetId, action = 24) { // 24 = MEMBER_R
 
 async function punishUser(member, reason) {
     try {
-        // Obtener roles quitables (excluyendo @everyone y roles protegidos)
         const rolesToRemove = member.roles.cache.filter(role => 
             role.name !== '@everyone' && 
             !role.permissions.has(PermissionsBitField.Flags.Administrator)
@@ -145,12 +144,9 @@ async function punishUser(member, reason) {
 
         if (rolesToRemove.size === 0) return;
 
-        // Quitar todos los roles
         await member.roles.set([], reason);
-        
         console.log(`[CASTIGO] Se quitaron ${rolesToRemove.size} roles a ${member.user.tag} (${member.id})`);
 
-        // Intentar enviar DM
         try {
             await member.send({
                 embeds: [{
@@ -160,9 +156,7 @@ async function punishUser(member, reason) {
                     timestamp: new Date()
                 }]
             });
-        } catch {
-            // No se pudo enviar DM
-        }
+        } catch {}
 
     } catch (error) {
         console.error('Error castigando usuario:', error);
@@ -199,47 +193,31 @@ client.once(Events.ClientReady, () => {
     console.log(`📊 Servidores: ${client.guilds.cache.size}`);
 });
 
-// Detectar cambios de roles
 client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
-    // Ignorar bots
     if (newMember.user.bot) return;
 
-    // Obtener diferencias de roles
     const oldRoles = oldMember.roles.cache;
     const newRoles = newMember.roles.cache;
     
     const addedRoles = newRoles.filter(role => !oldRoles.has(role.id));
-    const removedRoles = oldRoles.filter(role => !newRoles.has(role.id));
-
-    // Solo procesar si se agregaron roles (no si se quitaron)
     if (addedRoles.size === 0) return;
 
-    // Esperar un poco para que el audit log se actualice
     await new Promise(resolve => setTimeout(resolve, 500));
 
-    // Buscar en audit log quién hizo el cambio
     const auditEntry = await getAuditLogEntry(newMember.guild, newMember.id);
-    
     if (!auditEntry) return;
 
     const executor = auditEntry.executor;
-    
-    // Ignorar si el ejecutor es un bot o es el mismo usuario
     if (!executor || executor.bot || executor.id === newMember.id) return;
 
-    // Procesar cada rol agregado
     for (const [, role] of addedRoles) {
-        // Verificar si el ejecutor está en whitelist para este rol
         if (whitelist.isWhitelisted(newMember.guild.id, executor.id, role.id)) {
             console.log(`✅ ${executor.tag} autorizado para dar rol ${role.name} a ${newMember.user.tag}`);
             continue;
         }
 
-        // 🚨 NO ESTÁ EN WHITELIST - ACTIVAR PROTECCIÓN
-        
         console.log(`🚨 ${executor.tag} intentó dar rol ${role.name} sin autorización`);
 
-        // 1. Quitar el rol que asignó ilegalmente
         try {
             await newMember.roles.remove(role, `Protección de seguridad: ${executor.tag} no tiene permiso`);
             console.log(`✅ Rol ${role.name} revertido de ${newMember.user.tag}`);
@@ -247,13 +225,11 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
             console.error('Error quitando rol:', error);
         }
 
-        // 2. CASTIGAR al que intentó dar el rol
         const executorMember = await newMember.guild.members.fetch(executor.id).catch(() => null);
         if (executorMember) {
             await punishUser(executorMember, 'Protección de seguridad: Intento de asignar roles sin autorización');
         }
 
-        // 3. Log de seguridad
         await logSecurityAction(
             newMember.guild, 
             executor, 
@@ -272,47 +248,33 @@ client.on(Events.MessageCreate, async (message) => {
     const args = message.content.slice(CONFIG.prefix.length).trim().split(/\s+/);
     const command = args.shift().toLowerCase();
 
-    // Comando: whitelist_add
     if (command === 'whitelist_add') {
-        // Verificar permisos de administrador
         if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
             return message.reply('❌ Solo administradores pueden usar este comando.');
         }
-
         if (args.length < 1) {
-            return message.reply('❌ Uso: `,whitelist_add <user_id> [rol]`\nEjemplo: `,whitelist_add 123456789 all`\nEjemplo: `,whitelist_add 123456789 @Admin`');
+            return message.reply('❌ Uso: `,whitelist_add <user_id> [rol]`\nEjemplo: `,whitelist_add 123456789 all`');
         }
 
         const userId = args[0];
         const roleInput = args.slice(1).join(' ') || 'all';
 
         try {
-            // Buscar usuario
             const user = await client.users.fetch(userId).catch(() => null);
-            if (!user) {
-                return message.reply('❌ No se encontró ningún usuario con ese ID.');
-            }
+            if (!user) return message.reply('❌ No se encontró ningún usuario con ese ID.');
 
             let roles = 'all';
-            
-            // Si se especificó un rol específico
             if (roleInput.toLowerCase() !== 'all') {
-                // Buscar por mención, nombre o ID
                 const roleMention = roleInput.match(/<@&(\d+)>/);
                 const roleId = roleMention ? roleMention[1] : 
                               message.guild.roles.cache.find(r => 
                                   r.name.toLowerCase() === roleInput.toLowerCase() || 
                                   r.id === roleInput
                               )?.id;
-
-                if (!roleId) {
-                    return message.reply(`❌ No se encontró el rol \`${roleInput}\`. Usa \`all\` para permitir todos los roles.`);
-                }
-                
+                if (!roleId) return message.reply(`❌ No se encontró el rol \`${roleInput}\`.`);
                 roles = [roleId];
             }
 
-            // Agregar a whitelist
             whitelist.add(message.guild.id, userId, roles);
 
             const embed = new EmbedBuilder()
@@ -325,22 +287,17 @@ client.on(Events.MessageCreate, async (message) => {
                 .setTimestamp();
 
             await message.reply({ embeds: [embed] });
-
         } catch (error) {
             console.error(error);
             message.reply('❌ Error al procesar el comando.');
         }
     }
 
-    // Comando: whitelist_remove
     if (command === 'whitelist_remove') {
         if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
             return message.reply('❌ Solo administradores pueden usar este comando.');
         }
-
-        if (args.length < 1) {
-            return message.reply('❌ Uso: `,whitelist_remove <user_id>`');
-        }
+        if (args.length < 1) return message.reply('❌ Uso: `,whitelist_remove <user_id>`');
 
         const userId = args[0];
         const success = whitelist.remove(message.guild.id, userId);
@@ -353,7 +310,6 @@ client.on(Events.MessageCreate, async (message) => {
         }
     }
 
-    // Comando: whitelist_list
     if (command === 'whitelist_list') {
         if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
             return message.reply('❌ Solo administradores pueden usar este comando.');
@@ -372,17 +328,13 @@ client.on(Events.MessageCreate, async (message) => {
             const userStr = user ? user.toString() : `ID: ${userId}`;
             
             let roleStr;
-            if (roles === 'all') {
-                roleStr = 'Todos los roles';
-            } else if (Array.isArray(roles)) {
-                const roleNames = roles.map(rid => {
+            if (roles === 'all') roleStr = 'Todos los roles';
+            else if (Array.isArray(roles)) {
+                roleStr = roles.map(rid => {
                     const role = message.guild.roles.cache.get(rid);
                     return role ? role.name : `ID:${rid}`;
-                });
-                roleStr = roleNames.join(', ') || 'Ninguno';
-            } else {
-                roleStr = 'Desconocido';
-            }
+                }).join(', ');
+            } else roleStr = 'Desconocido';
             
             description += `• ${userStr} → ${roleStr}\n`;
         }
@@ -396,20 +348,17 @@ client.on(Events.MessageCreate, async (message) => {
         await message.reply({ embeds: [embed] });
     }
 
-    // Comando: whitelist_clear (emergencia - quita todos los roles a todos)
     if (command === 'emergency_clear') {
         if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
             return message.reply('❌ Solo administradores pueden usar este comando.');
         }
 
-        const confirmMessage = await message.reply('⚠️ Esto quitará TODOS los roles de TODOS los usuarios (excepto @everyone). Escribe `CONFIRMAR` para proceder.');
+        const confirmMessage = await message.reply('⚠️ Esto quitará TODOS los roles de TODOS los usuarios. Escribe `CONFIRMAR` para proceder.');
 
         const filter = m => m.author.id === message.author.id && m.content === 'CONFIRMAR';
         const collected = await message.channel.awaitMessages({ filter, max: 1, time: 30000, errors: ['time'] }).catch(() => null);
 
-        if (!collected) {
-            return message.reply('❌ Operación cancelada (timeout).');
-        }
+        if (!collected) return message.reply('❌ Operación cancelada.');
 
         message.reply('🔄 Procesando... Esto puede tardar.');
 
@@ -418,7 +367,6 @@ client.on(Events.MessageCreate, async (message) => {
 
         for (const [, member] of members) {
             if (member.user.bot) continue;
-            
             const rolesToRemove = member.roles.cache.filter(r => r.name !== '@everyone');
             if (rolesToRemove.size > 0) {
                 try {
@@ -434,7 +382,6 @@ client.on(Events.MessageCreate, async (message) => {
     }
 });
 
-// Manejo de errores
 client.on(Events.Error, (error) => {
     console.error('Error del cliente:', error);
 });
