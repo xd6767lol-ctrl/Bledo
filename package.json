@@ -1,11 +1,12 @@
 {
-  "name": "bledo-bot",
+  "name": "nino-6666-bot",
   "version": "1.0.0",
   "scripts": {
     "start": "node src/index.js"
   },
   "dependencies": {
-    "discord.js": "^14.17.3"
+    "discord.js": "^14.17.3",
+    "express": "^4.21.0"
   },
   "engines": {
     "node": "20.x"
