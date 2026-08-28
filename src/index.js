@@ -1,404 +1,256 @@
+const { Client, GatewayIntentBits, Partials, Collection, EmbedBuilder, PermissionFlagsBits, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const mongoose = require('mongoose');
 require('dotenv').config();
-const { 
-    Client, 
-    GatewayIntentBits, 
-    Collection, 
-    EmbedBuilder, 
-    ActionRowBuilder, 
-    ButtonBuilder, 
-    ButtonStyle, 
-    PermissionsBitField, 
-    PermissionsFlagsBitField 
-} = require('discord.js');
 
-// ==========================================
-// CONFIGURACIÓN Y BASE DE DATOS EN MEMORIA
-// ==========================================
-const config = {
-    prefix: '!', // Prefijo para comandos de texto
-    token: process.env.TOKEN,
-    ownerId: process.env.OWNER_ID || 'TU_ID_AQUI', // Pon tu ID aquí si no está en env
-    antinube: true,
-    logChannelId: null, // Se setea auto si no está
-    reactionMenu: {
-        channelId: null, // ID del canal donde se publica el menú
-        roleId1: null,
-        roleId2: null
-    }
-};
-
-// Base de datos en memoria (simulada)
-const db = {
-    settings: {}, // guildId -> { prefix, logChannelId, antinube }
-    logs: [],
-    reactions: {} // guildId -> { channelId, roles: [{id, emoji}] }
-};
-
-function getGuildSettings(guildId) {
-    if (!db.settings[guildId]) {
-        db.settings[guildId] = {
-            prefix: config.prefix,
-            logChannelId: null,
-            antinuke: true,
-            reactionMenu: null
-        };
-    }
-    return db.settings[guildId];
-}
-
-// ==========================================
-// CLIENTE DISCORD
-// ==========================================
 const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.GuildMembers,
-        GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildMessageReactions,
-        GatewayIntentBits.GuildPresences,
-        GatewayIntentBits.GuildMembers, // Necesario para antinuke
-        GatewayIntentBits.MessageContent // Para leer contenido si es necesario
-    ]
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessageReactions,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildBans,
+    GatewayIntentBits.GuildInvites
+  ],
+  partials: [Partials.Message, Partials.Channel, Partials.Reaction, Partials.GuildMember]
 });
 
-client.commands = new Collection();
-client.cooldowns = new Map();
+// Configuración
+const config = {
+  prefix: '!',
+  colors: { main: 0x5865F2, success: 0x57F287, error: 0xED4245, warning: 0xFEE75C },
+  emojis: { success: '✅', error: '❌', shield: '🛡️', warn: '⚠️' }
+};
 
-// ==========================================
-// HELPER: LOGS
-// ==========================================
-async function sendLog(guild, embed) {
-    const settings = getGuildSettings(guild.id);
-    let channelId = settings.logChannelId;
+// MongoDB Schema
+const guildSchema = new mongoose.Schema({
+  guildId: { type: String, required: true, unique: true },
+  antinuke: {
+    enabled: { type: Boolean, default: false },
+    whitelist: [{ type: String }],
+    limits: { bans: 3, kicks: 3, channelDelete: 3, roleDelete: 3 },
+    punishment: { type: String, default: 'ban' },
+    logChannel: { type: String }
+  },
+  autorole: { enabled: false, roleId: null },
+  reactionRoles: []
+});
+
+const Guild = mongoose.model('Guild', guildSchema);
+
+// Sistema Antinuke
+client.antinuke = new Map();
+
+async function checkAntinuke(guild, user, actionType) {
+  const guildData = await Guild.findOne({ guildId: guild.id });
+  if (!guildData?.antinuke?.enabled) return false;
+  if (guildData.antinuke.whitelist.includes(user.id)) return false;
+  if (user.id === guild.ownerId) return false;
+
+  if (!client.antinuke.has(guild.id)) client.antinuke.set(guild.id, new Map());
+  const guildActions = client.antinuke.get(guild.id);
+  
+  if (!guildActions.has(user.id)) guildActions.set(user.id, []);
+  const userActions = guildActions.get(user.id);
+  const now = Date.now();
+  
+  userActions.push({ action: actionType, time: now });
+  const recent = userActions.filter(a => now - a.time < 10000);
+  guildActions.set(user.id, recent);
+
+  const limit = guildData.antinuke.limits[actionType] || 3;
+  const count = recent.filter(a => a.action === actionType).length;
+
+  if (count >= limit) {
+    const member = await guild.members.fetch(user.id).catch(() => null);
+    if (member) {
+      if (guildData.antinuke.punishment === 'ban') await member.ban({ reason: 'Antinuke triggered' });
+      else if (guildData.antinuke.punishment === 'kick') await member.kick('Antinuke triggered');
+      else if (guildData.antinuke.punishment === 'strip') await member.roles.set([]);
+    }
     
-    if (!channelId) {
-        // Buscar canal de logs o crear uno si no existe
-        const channel = guild.channels.cache.find(c => c.name.includes('logs') || c.name.includes('log'));
-        if (channel) {
-            channelId = channel.id;
-            settings.logChannelId = channelId;
-        }
+    if (guildData.antinuke.logChannel) {
+      const logCh = guild.channels.cache.get(guildData.antinuke.logChannel);
+      if (logCh) logCh.send(`${config.emojis.shield} **Antinuke:** ${user.tag} sancionado por ${actionType}`);
     }
-
-    if (channelId) {
-        const channel = guild.channels.cache.get(channelId);
-        if (channel && channel.permissionsFor(guild.members.me).has('SendMessages')) {
-            channel.send({ embeds: [embed] });
-        }
-    }
+    return true;
+  }
+  return false;
 }
 
-// ==========================================
-// COMANDOS
-// ==========================================
-
-// 1. CONFIGURACIÓN
-client.commands.set('setprefix', {
-    name: 'setprefix',
-    description: 'Configura el prefijo del bot',
-    adminOnly: false,
-    async execute(message, args) {
-        if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) 
-            return message.channel.send('❌ Necesitas **Administrador**.');
-        
-        const prefix = args[0];
-        if (!prefix) return message.channel.send('❌ Uso: `setprefix <prefijo>`');
-        
-        getGuildSettings(message.guild.id).prefix = prefix;
-        message.channel.send(`✅ Prefijo cambiado a: \`${prefix}\``);
+// Eventos
+client.on('ready', () => {
+  console.log(`🤖 ${client.user.tag} online`);
+  client.user.setActivity('!help | Protegiendo servidores', { type: 3 });
+  
+  setInterval(() => {
+    const now = Date.now();
+    for (const [guildId, data] of client.antinuke) {
+      for (const [userId, actions] of data) {
+        const filtered = actions.filter(time => now - time < 10000);
+        if (filtered.length === 0) data.delete(userId);
+        else data.set(userId, filtered);
+      }
+      if (data.size === 0) client.antinuke.delete(guildId);
     }
-});
-
-client.commands.set('setlog', {
-    name: 'setlog',
-    description: 'Configura el canal de logs',
-    adminOnly: false,
-    async execute(message, args) {
-        if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) 
-            return message.channel.send('❌ Necesitas **Administrador**.');
-        
-        getGuildSettings(message.guild.id).logChannelId = message.channel.id;
-        message.channel.send('✅ Canal de logs configurado.');
-    }
-});
-
-// 2. ROLES (BASICO)
-client.commands.set('role', {
-    name: 'role',
-    description: 'Da o quita un rol',
-    adminOnly: true,
-    async execute(message, args) {
-        if (!message.member.permissions.has(PermissionsBitField.Flags.ManageRoles)) 
-            return message.channel.send('❌ Necesitas **Gestionar Roles**.');
-        
-        const member = message.mentions.members.first();
-        const role = message.mentions.roles.first() || message.guild.roles.cache.get(args[1]);
-        
-        if (!member || !role) return message.channel.send('❌ Mención a usuario y rol: `!role @usuario @rol`');
-        
-        const action = args[0] === 'remover' || args[0] === 'remove' ? 'remove' : 'add';
-        
-        if (action === 'add') {
-            await member.roles.add(role);
-            message.channel.send(`✅ Rol ${role.name} añadido a ${member.user.tag}.`);
-        } else {
-            await member.roles.remove(role);
-            message.channel.send(`✅ Rol ${role.name} quitado de ${member.user.tag}.`);
-        }
-    }
-});
-
-// 3. REACCIONES (MENÚ)
-client.commands.set('reactionmenu', {
-    name: 'reactionmenu',
-    description: 'Crea un menú de reacciones',
-    adminOnly: true,
-    async execute(message, args) {
-        if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) 
-            return message.channel.send('❌ Necesitas **Administrador**.');
-        
-        const role1 = message.mentions.roles.first();
-        const role2 = message.mentions.roles.last();
-        
-        if (!role1 || !role2) return message.channel.send('❌ Uso: `!reactionmenu @rol1 @rol2`');
-
-        const embed = new EmbedBuilder()
-            .setTitle('📜 Menú de Reacciones')
-            .setDescription('Reacciona para obtener tus roles:')
-            .setColor('Blue');
-
-        const row = new ActionRowBuilder()
-            .addComponents(
-                new ButtonBuilder()
-                    .setCustomId(`role_${role1.id}`)
-                    .setLabel(role1.name)
-                    .setStyle(ButtonStyle.Primary),
-                new ButtonBuilder()
-                    .setCustomId(`role_${role2.id}`)
-                    .setLabel(role2.name)
-                    .setStyle(ButtonStyle.Secondary)
-            );
-
-        const msg = await message.channel.send({ embeds: [embed], components: [row] });
-        
-        // Guardar en DB
-        getGuildSettings(message.guild.id).reactionMenu = {
-            channelId: msg.channel.id,
-            messageId: msg.id,
-            roles: [role1.id, role2.id]
-        };
-
-        message.channel.send('✅ Menú de reacciones creado.');
-    }
-});
-
-// 4. ANTI NUKE (Lógica Completa)
-const antiNukeEvents = [
-    'GuildChannelUpdate',
-    'GuildBanAdd',
-    'GuildBanRemove',
-    'GuildMemberUpdate',
-    'GuildMemberRemove',
-    'GuildMemberAdd',
-    'RoleDelete',
-    'ChannelDelete',
-    'ChannelCreate'
-];
-
-// ==========================================
-// EVENTOS
-// ==========================================
-
-client.once('ready', async () => {
-    console.log(`✅ Bot conectado como: ${client.user.tag}`);
-    client.user.setActivity('!help | Antinube ON', { type: 'WATCHING' });
-    
-    // Iniciar health check para render
-    const express = require('express');
-    const app = express();
-    app.get('/', (req, res) => {
-        res.send('OK');
-    });
-    app.listen(3000);
-    console.log('🚀 Health check iniciado en puerto 3000');
-});
-
-client.on('messageCreate', async (message) => {
-    if (message.author.bot) return;
-    
-    const settings = getGuildSettings(message.guild.id);
-    const prefix = settings.prefix || '!';
-    
-    if (!message.content.startsWith(prefix)) return;
-    
-    const args = message.content.slice(prefix.length).trim().split(/ +/);
-    const commandName = args.shift().toLowerCase();
-    const command = client.commands.get(commandName);
-    
-    if (command) {
-        // Verificar permisos
-        if (command.adminOnly && !message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
-            return message.channel.send('❌ Necesitas **Administrador** para este comando.');
-        }
-        
-        // Cooldown simple
-        const now = Date.now();
-        const timestamps = client.cooldowns.get(command.name) || new Map();
-        const cooldownAmount = 3; // 3 segundos
-        
-        if (timestamps.has(message.author.id)) {
-            const expirationTime = timestamps.get(message.author.id) + cooldownAmount * 1000;
-            if (now < expirationTime) {
-                const timeLeft = (expirationTime - now) / 1000;
-                return message.reply(`⏳ Espera ${timeLeft.toFixed(1)} segundos.`).then(msg => {
-                    setTimeout(() => msg.delete().catch(() => {}), timeLeft * 1000);
-                });
-            }
-        }
-        
-        timestamps.set(message.author.id, now);
-        client.cooldowns.set(command.name, timestamps);
-        
-        command.execute(message, args);
-    }
-});
-
-// ANTI NUKE LOGIC
-client.on('GuildChannelCreate', async (channel) => {
-    const settings = getGuildSettings(channel.guild.id);
-    if (!settings.antinuke) return;
-    
-    const auditLogs = await channel.guild.fetchAuditLogs({ limit: 1, type: 'ChannelCreate' });
-    const logEntry = auditLogs.entries.first();
-    
-    if (!logEntry) return;
-    
-    const creator = logEntry.executor;
-    if (creator.id === config.ownerId || channel.guild.members.me.permissions.has(PermissionsBitField.Flags.Administrator)) return;
-    
-    // Si no tiene admin, borrar canal
-    if (!creator.permissions.has(PermissionsBitField.Flags.Administrator)) {
-        await channel.delete();
-        await sendLog(channel.guild, new EmbedBuilder()
-            .setTitle('🚫 Canal Creado')
-            .setDescription(`El canal ${channel.name} fue eliminado por no-admin.\nCreado por: ${creator.user.tag}`)
-            .setColor('Red')
-        );
-    }
-});
-
-client.on('GuildChannelDelete', async (channel) => {
-    const settings = getGuildSettings(channel.guild.id);
-    if (!settings.antinuke) return;
-    
-    const auditLogs = await channel.guild.fetchAuditLogs({ limit: 1, type: 'ChannelDelete' });
-    const logEntry = auditLogs.entries.first();
-    
-    if (!logEntry) return;
-    
-    const creator = logEntry.executor;
-    if (creator.id === config.ownerId) return;
-    
-    // Restaurar canal
-    try {
-        const restored = await channel.guild.channels.create({
-            name: channel.name,
-            type: channel.type,
-            parent: channel.parentId,
-            position: channel.rawPosition
-        });
-        
-        await sendLog(channel.guild, new EmbedBuilder()
-            .setTitle('🔄 Canal Restaurado')
-            .setDescription(`El canal ${channel.name} fue restaurado.\nEliminado por: ${creator.user.tag}`)
-            .setColor('Green')
-        );
-    } catch (e) {
-        console.error('Error restaurando canal:', e);
-    }
-});
-
-client.on('GuildBanAdd', async (guild, user) => {
-    const settings = getGuildSettings(guild.id);
-    if (!settings.antinuke) return;
-    
-    const auditLogs = await guild.fetchAuditLogs({ limit: 1, type: 'MemberBanAdd' });
-    const logEntry = auditLogs.entries.first();
-    if (!logEntry) return;
-    
-    const creator = logEntry.executor;
-    if (creator.id === config.ownerId) return;
-    
-    await guild.members.unban(user.id);
-    await sendLog(guild, new EmbedBuilder()
-        .setTitle('🚫 Ban Anti-Nuke')
-        .setDescription(`${user.tag} fue baneado por ${creator.tag}. Se deshizo.`)
-        .setColor('Yellow')
-    );
-});
-
-client.on('GuildMemberUpdate', async (oldMember, newMember) => {
-    const settings = getGuildSettings(newMember.guild.id);
-    if (!settings.antinuke) return;
-    
-    // Detectar cambio de roles masivo o cambio de role de alto rango
-    if (oldMember.roles.cache.size !== newMember.roles.cache.size) {
-        const auditLogs = await newMember.guild.fetchAuditLogs({ limit: 1, type: 'MemberRoleUpdate' });
-        const logEntry = auditLogs.entries.first();
-        if (logEntry && logEntry.executor.id !== config.ownerId) {
-            // Aquí podrías revertir el rol si no tiene permisos
-            if (!logEntry.executor.permissions.has(PermissionsBitField.Flags.Administrator)) {
-                // Revertir roles añadidos
-                const addedRoles = newMember.roles.cache.filter(r => !oldMember.roles.cache.has(r.id));
-                if (addedRoles.size > 0) {
-                    await newMember.roles.remove(addedRoles.first());
-                    await sendLog(newMember.guild, new EmbedBuilder()
-                        .setTitle('🔄 Role Anti-Nuke')
-                        .setDescription(`Se removió ${addedRoles.first().name} a ${newMember.user.tag}.`)
-                        .setColor('Red')
-                    );
-                }
-            }
-        }
-    }
+  }, 10000);
 });
 
 client.on('guildMemberAdd', async (member) => {
-    // Log simple al entrar
-    // const logChannel = member.guild.channels.cache.get(getGuildSettings(member.guild.id).logChannelId);
-    // if(logChannel) logChannel.send(`✅ ${member.user.tag} se unió.`);
+  const data = await Guild.findOne({ guildId: member.guild.id });
+  if (data?.autorole?.enabled && data.autorole.roleId) {
+    const role = member.guild.roles.cache.get(data.autorole.roleId);
+    if (role) await member.roles.add(role).catch(() => null);
+  }
 });
 
-// ==========================================
-// INTERACCIÓN DE BOTONES (REACTIONS)
-// ==========================================
-client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isButton()) return;
+client.on('channelDelete', async (channel) => {
+  if (!channel.guild) return;
+  const audit = await channel.guild.fetchAuditLogs({ type: 12, limit: 1 }).catch(() => null);
+  if (!audit) return;
+  const entry = audit.entries.first();
+  if (entry && Date.now() - entry.createdTimestamp < 5000) {
+    await checkAntinuke(channel.guild, entry.executor, 'channelDelete');
+  }
+});
+
+client.on('roleDelete', async (role) => {
+  const audit = await role.guild.fetchAuditLogs({ type: 32, limit: 1 }).catch(() => null);
+  if (!audit) return;
+  const entry = audit.entries.first();
+  if (entry && Date.now() - entry.createdTimestamp < 5000) {
+    await checkAntinuke(role.guild, entry.executor, 'roleDelete');
+  }
+});
+
+client.on('guildMemberRemove', async (member) => {
+  const audit = await member.guild.fetchAuditLogs({ type: 20, limit: 1 }).catch(() => null);
+  if (!audit) return;
+  const entry = audit.entries.first();
+  if (entry && entry.target.id === member.id && Date.now() - entry.createdTimestamp < 5000) {
+    await checkAntinuke(member.guild, entry.executor, 'kicks');
+  }
+});
+
+// Comandos
+client.on('messageCreate', async (message) => {
+  if (message.author.bot || !message.guild) return;
+  
+  let data = await Guild.findOne({ guildId: message.guild.id });
+  if (!data) data = await Guild.create({ guildId: message.guild.id });
+  
+  const prefix = config.prefix;
+  if (!message.content.startsWith(prefix)) return;
+  
+  const args = message.content.slice(prefix.length).trim().split(/ +/);
+  const cmd = args.shift().toLowerCase();
+  
+  // ANTINUKE
+  if (cmd === 'antinuke') {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return message.reply('❌ Necesitas permisos de Administrador');
     
-    const settings = getGuildSettings(interaction.guild.id);
-    if (!settings.reactionMenu) return;
-    
-    // Verificar si es el canal correcto
-    if (interaction.channel.id !== settings.reactionMenu.channelId) return;
-    
-    const customId = interaction.customId;
-    const roleId = customId.replace('role_', '');
-    
-    const role = interaction.guild.roles.cache.get(roleId);
-    if (!role) return;
-    
-    const member = interaction.guild.members.cache.get(interaction.user.id);
-    if (member.roles.cache.has(roleId)) {
-        await member.roles.remove(role);
-        await interaction.update({ content: `✅ Rol ${role.name} removido.` });
-    } else {
-        await member.roles.add(role);
-        await interaction.update({ content: `✅ Rol ${role.name} añadido.` });
+    const sub = args[0]?.toLowerCase();
+    if (!sub || sub === 'status') {
+      return message.reply(`🛡️ **Antinuke:** ${data.antinuke.enabled ? '✅ Activado' : '❌ Desactivado'}\nCastigo: ${data.antinuke.punishment}\nWhitelist: ${data.antinuke.whitelist.length} usuarios`);
     }
+    if (sub === 'enable') { data.antinuke.enabled = true; await data.save(); return message.reply('✅ Antinuke activado'); }
+    if (sub === 'disable') { data.antinuke.enabled = false; await data.save(); return message.reply('❌ Antinuke desactivado'); }
+    if (sub === 'punishment') {
+      const p = args[1]?.toLowerCase();
+      if (!['ban','kick','strip'].includes(p)) return message.reply('❌ Opciones: ban, kick, strip');
+      data.antinuke.punishment = p; await data.save();
+      return message.reply(`✅ Castigo: ${p}`);
+    }
+    if (sub === 'logs') {
+      const ch = message.mentions.channels.first();
+      if (!ch) return message.reply('❌ Menciona un canal');
+      data.antinuke.logChannel = ch.id; await data.save();
+      return message.reply(`✅ Logs en ${ch}`);
+    }
+  }
+  
+  // WHITELIST
+  if (cmd === 'whitelist') {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return;
+    const sub = args[0]?.toLowerCase();
+    const user = message.mentions.users.first();
+    
+    if (sub === 'add' && user) {
+      if (data.antinuke.whitelist.includes(user.id)) return message.reply('❌ Ya está en whitelist');
+      data.antinuke.whitelist.push(user.id); await data.save();
+      return message.reply(`✅ ${user.tag} añadido`);
+    }
+    if (sub === 'remove' && user) {
+      data.antinuke.whitelist = data.antinuke.whitelist.filter(id => id !== user.id);
+      await data.save(); return message.reply(`✅ ${user.tag} removido`);
+    }
+    const list = data.antinuke.whitelist.length > 0 ? data.antinuke.whitelist.map(id => `<@${id}>`).join(', ') : 'Vacía';
+    return message.reply(`📋 Whitelist: ${list}`);
+  }
+  
+  // MODERACIÓN
+  if (cmd === 'ban') {
+    if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return;
+    const user = message.mentions.users.first() || await client.users.fetch(args[0]).catch(() => null);
+    if (!user) return message.reply('❌ Usuario no encontrado');
+    const reason = args.slice(1).join(' ') || 'Sin razón';
+    await message.guild.members.ban(user, { reason }).catch(() => message.reply('❌ No pude banear'));
+    return message.reply(`✅ ${user.tag} baneado`);
+  }
+  
+  if (cmd === 'kick') {
+    if (!message.member.permissions.has(PermissionFlagsBits.KickMembers)) return;
+    const member = message.mentions.members.first();
+    if (!member) return message.reply('❌ Menciona un miembro');
+    await member.kick().catch(() => message.reply('❌ No pude expulsar'));
+    return message.reply(`✅ ${member.user.tag} expulsado`);
+  }
+  
+  if (cmd === 'purge') {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return;
+    const amount = parseInt(args[0]);
+    if (!amount || amount < 1 || amount > 100) return message.reply('❌ Usa: !purge <1-100>');
+    const deleted = await message.channel.bulkDelete(amount + 1, true).catch(() => null);
+    const msg = await message.channel.send(`✅ ${deleted?.size - 1 || 0} mensajes borrados`);
+    setTimeout(() => msg.delete(), 3000);
+  }
+  
+  // ROLES
+  if (cmd === 'autorole') {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return;
+    const sub = args[0]?.toLowerCase();
+    if (sub === 'set') {
+      const role = message.mentions.roles.first();
+      if (!role) return message.reply('❌ Menciona un rol');
+      data.autorole = { enabled: true, roleId: role.id };
+      await data.save(); return message.reply(`✅ Auto-role: ${role.name}`);
+    }
+    if (sub === 'disable') {
+      data.autorole.enabled = false; await data.save();
+      return message.reply('✅ Auto-role desactivado');
+    }
+    return message.reply(`Auto-role: ${data.autorole.enabled ? `✅ <@&${data.autorole.roleId}>` : '❌ Desactivado'}`);
+  }
+  
+  // UTILIDAD
+  if (cmd === 'ping') {
+    return message.reply(`🏓 Pong! ${Date.now() - message.createdTimestamp}ms | API: ${client.ws.ping}ms`);
+  }
+  
+  if (cmd === 'help') {
+    const embed = new EmbedBuilder()
+      .setColor(config.colors.main)
+      .setTitle('🤖 Comandos del Bot')
+      .addFields(
+        { name: '🛡️ Antinuke', value: '`!antinuke enable/disable/status`\n`!antinuke punishment ban/kick/strip`\n`!antinuke logs #canal`\n`!whitelist add/remove @user`' },
+        { name: '🔨 Moderación', value: '`!ban @user`\n`!kick @user`\n`!purge <cantidad>`' },
+        { name: '👥 Roles', value: '`!autorole set @rol`\n`!autorole disable`' },
+        { name: '⚙️ Utilidad', value: '`!ping`\n`!help`' }
+      );
+    return message.reply({ embeds: [embed] });
+  }
 });
 
-// ==========================================
-// START
-// ==========================================
-client.login(config.token);
+// Conectar
+mongoose.connect(process.env.MONGODB_URI).then(() => console.log('✅ MongoDB conectado')).catch(err => console.error('❌ MongoDB error:', err));
+client.login(process.env.TOKEN);
