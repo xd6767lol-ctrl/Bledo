@@ -1,38 +1,41 @@
 // ==========================================
-// PASO 1: PRIMERO IMPORTAR TODO DE DISCORD
+// IMPORTACIONES
 // ==========================================
-const { Client, GatewayIntentBits, Events, PermissionsBitField, EmbedBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, Events, PermissionsBitField, EmbedBuilder, ChannelType } = require('discord.js');
 const fs = require('fs');
-const path = require('path');
-
-// ==========================================
-// PASO 2: SERVIDOR DE EXPRESS (para Render)
-// ==========================================
 const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-app.get('/', (req, res) => res.send('✅ Niño 6,6,6,6 — Activo y Protegiendo Roles'));
-
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`✅ Puerto listo — Bot estable en Render`);
-});
+// ==========================================
+// SERVIDOR PARA RENDER
+// ==========================================
+app.get('/', (req, res) => res.send('✅ Niño 6,6,6,6 — ANTINUKE + LOCK + COMANDO R MEJORADO'));
+app.listen(PORT, '0.0.0.0', () => console.log(`✅ Puerto listo — Bot estable`));
 
 // ==========================================
-// PASO 3: CONFIGURACIÓN
+// CONFIGURACIÓN — PON LOS IDs DE TUS ROLES
 // ==========================================
 const CONFIG = {
   token: process.env.DISCORD_TOKEN,
   prefix: ',',
   whitelistFile: './whitelist.json',
-  // ⚠️ ROL DE OWNER PROTEGIDO — PON AQUÍ EL ID DEL ROL DE DUEÑO
-  ownerRoleId: 'PON_AQUÍ_EL_ID_DEL_ROL_OWNER', // 👈 CAMBIA ESTO POR EL ID REAL
-  protectedRoles: ['ADMINISTRATOR'],
-  logChannel: 'seguridad'
+  antinukeFile: './antinuke_data.json',
+  ownerRoleId: 'PON_AQUÍ_EL_ID_DEL_ROL_OWNER', // 👈 ROL DE OWNER
+  // 🔒 ROLES QUE PUEDEN BLOQUEAR/DESBLOQUEAR
+  lockAllowedRoleIds: [
+    'PON_AQUÍ_ID_ROL_1',  // 👈 ROL 1
+    'PON_AQUÍ_ID_ROL_2',  // 👈 ROL 2
+    'PON_AQUÍ_ID_ROL_3',  // 👈 ROL 3
+    'PON_AQUÍ_ID_ROL_4'   // 👈 ROL 4
+  ],
+  logChannel: 'seguridad',
+  maxChannelsCreate: 3,
+  maxActionsWindow: 15000
 };
 
 // ==========================================
-// PASO 4: INICIAR CLIENTE DE DISCORD
+// CLIENTE DE DISCORD
 // ==========================================
 const client = new Client({
   intents: [
@@ -44,408 +47,439 @@ const client = new Client({
   ]
 });
 
-// ==================== SISTEMA DE WHITELIST ====================
+// ==========================================
+// FUNCIÓN: VERIFICAR SI PUEDE USAR LOCK/UNLOCK
+// ==========================================
+function canUseLockCommands(member) {
+  if (member.id === member.guild.ownerId) return true;
+  const antinukeData = JSON.parse(fs.existsSync(CONFIG.antinukeFile) ? fs.readFileSync(CONFIG.antinukeFile, 'utf8') : '{"whitelist":[],"admins":[]}');
+  if (antinukeData.admins.includes(member.id)) return true;
+  return CONFIG.lockAllowedRoleIds.some(roleId => member.roles.cache.has(roleId));
+}
 
-class WhitelistManager {
+// ==========================================
+// SISTEMA ANTINUKE — WL y ADMIN SEPARADOS
+// ==========================================
+class AntiNukeManager {
     constructor() {
         this.data = this.load();
+        this.actionTracker = {};
     }
 
     load() {
         try {
-            if (fs.existsSync(CONFIG.whitelistFile)) {
-                const data = fs.readFileSync(CONFIG.whitelistFile, 'utf8');
+            if (fs.existsSync(CONFIG.antinukeFile)) {
+                const data = fs.readFileSync(CONFIG.antinukeFile, 'utf8');
                 return JSON.parse(data);
             }
-        } catch (error) {
-            console.error('Error cargando whitelist:', error);
-        }
-        return {};
+        } catch (e) { console.error('Error cargando antinuke:', e); }
+        return { whitelist: [], admins: [] };
     }
 
     save() {
-        try {
-            fs.writeFileSync(CONFIG.whitelistFile, JSON.stringify(this.data, null, 4));
-        } catch (error) {
-            console.error('Error guardando whitelist:', error);
-        }
+        try { fs.writeFileSync(CONFIG.antinukeFile, JSON.stringify(this.data, null, 4)); }
+        catch (e) { console.error('Error guardando:', e); }
     }
 
-    isWhitelisted(guildId, userId, roleId = null) {
-        const guildData = this.data[guildId];
-        if (!guildData) return false;
-        
-        const userData = guildData[userId];
-        if (!userData) return false;
+    isWhitelisted(userId) { return this.data.whitelist.includes(userId); }
+    isAdmin(userId) { return this.data.admins.includes(userId); }
+    isAuthorized(userId) { return this.isWhitelisted(userId) || this.isAdmin(userId); }
 
-        if (userData === 'all') return true;
-        if (Array.isArray(userData)) {
-            return roleId ? userData.includes(roleId) : true;
-        }
-        return false;
+    addToWhitelist(userId) {
+        if (!this.data.whitelist.includes(userId)) { this.data.whitelist.push(userId); this.save(); }
+    }
+    removeFromWhitelist(userId) {
+        this.data.whitelist = this.data.whitelist.filter(id => id !== userId); this.save();
+    }
+    addAdmin(userId) {
+        if (!this.data.admins.includes(userId)) { this.data.admins.push(userId); this.save(); }
+    }
+    removeAdmin(userId) {
+        this.data.admins = this.data.admins.filter(id => id !== userId); this.save();
     }
 
-    add(guildId, userId, roles = 'all') {
-        if (!this.data[guildId]) {
-            this.data[guildId] = {};
-        }
-        if (Array.isArray(this.data[guildId][userId]) && Array.isArray(roles)) {
-            roles.forEach(role => {
-                if (!this.data[guildId][userId].includes(role)) {
-                    this.data[guildId][userId].push(role);
-                }
-            });
-        } else {
-            this.data[guildId][userId] = roles;
-        }
-        this.save();
-    }
+    checkLimit(guildId, userId) {
+        if (this.isAdmin(userId)) return { allowed: true, count: 0, limit: '∞' };
+        if (!this.isWhitelisted(userId)) return { allowed: false, count: 1, limit: 0, noPermit: true };
 
-    remove(guildId, userId) {
-        if (this.data[guildId] && this.data[guildId][userId]) {
-            delete this.data[guildId][userId];
-            this.save();
-            return true;
-        }
-        return false;
-    }
+        const now = Date.now();
+        if (!this.actionTracker[guildId]) this.actionTracker[guildId] = {};
+        if (!this.actionTracker[guildId][userId]) this.actionTracker[guildId][userId] = [];
 
-    getList(guildId) {
-        return this.data[guildId] || {};
+        const userActions = this.actionTracker[guildId][userId].filter(t => now - t < CONFIG.maxActionsWindow);
+        userActions.push(now);
+        this.actionTracker[guildId][userId] = userActions;
+
+        return {
+            allowed: userActions.length <= CONFIG.maxChannelsCreate,
+            count: userActions.length,
+            limit: CONFIG.maxChannelsCreate
+        };
     }
 }
 
-const whitelist = new WhitelistManager();
+const antinuke = new AntiNukeManager();
 
-// ==================== FUNCIONES DE SEGURIDAD ====================
+// ==========================================
+// ALMACENAR ESTADO DE CANALES BLOQUEADOS
+// ==========================================
+const lockedChannels = new Map();
 
-async function getAuditLogEntry(guild, targetId, action = 24) {
+// ==========================================
+// FUNCIONES DE CASTIGO — QUITAR TODOS LOS ROLES
+// ==========================================
+async function punishRemoveAllRoles(member, motivo) {
     try {
-        const auditLogs = await guild.fetchAuditLogs({
-            limit: 10,
-            type: action
-        });
-        return auditLogs.entries.find(entry => 
-            entry.targetId === targetId && 
-            Date.now() - entry.createdTimestamp < 10000
+        const rolesQuitar = member.roles.cache.filter(r => 
+            r.name !== '@everyone' && !r.permissions.has(PermissionsBitField.Flags.Administrator)
         );
-    } catch (error) {
-        console.error('Error obteniendo audit log:', error);
-        return null;
-    }
-}
+        if (rolesQuitar.size === 0) return;
 
-async function punishUser(member, reason) {
-    try {
-        const rolesToRemove = member.roles.cache.filter(role => 
-            role.name !== '@everyone' && 
-            !role.permissions.has(PermissionsBitField.Flags.Administrator)
-        );
-
-        if (rolesToRemove.size === 0) return;
-
-        await member.roles.set([], reason);
-        console.log(`[CASTIGO] Se quitaron ${rolesToRemove.size} roles a ${member.user.tag} (${member.id})`);
+        await member.roles.set([], motivo);
+        console.log(`⚠️ CASTIGO: Se quitaron ${rolesQuitar.size} roles a ${member.user.tag} — ${motivo}`);
 
         try {
-            await member.send({
-                embeds: [{
-                    title: '⚠️ ALERTA DE SEGURIDAD',
-                    description: `Se te han quitado todos tus roles en **${member.guild.name}** por intentar asignar roles manualmente sin estar en la whitelist.\n\nContacta a un administrador si crees que esto es un error.`,
-                    color: 0xFF0000,
-                    timestamp: new Date()
-                }]
-            });
+            await member.send({ embeds: [{
+                title: '🚨 ACCIÓN BLOQUEADA — SE TE QUITARON TODOS LOS ROLES',
+                description: `No tienes permiso para realizar esa acción en **${member.guild.name}**.\nSolicita acceso con el Owner.`,
+                color: 0xFF0000, timestamp: new Date()
+            }]});
         } catch {}
-
-    } catch (error) {
-        console.error('Error castigando usuario:', error);
-    }
+    } catch (e) { console.error('Error al castigar:', e); }
 }
 
-async function logSecurityAction(guild, offender, victim, role, action) {
-    if (!CONFIG.logChannel) return;
-    
-    const logChannel = guild.channels.cache.find(
-        ch => ch.name === CONFIG.logChannel && ch.isTextBased()
-    );
-    
-    if (!logChannel) return;
+async function getAuditEntry(guild, actionType, limit = 5) {
+    try {
+        const logs = await guild.fetchAuditLogs({ limit, type: actionType });
+        return logs.entries.first();
+    } catch { return null; }
+}
 
-    const embed = new EmbedBuilder()
-        .setTitle('🚨 Intento de Asignación de Rol Ilegal')
+async function logSeguridad(guild, usuario, accion, detalle) {
+    const canal = guild.channels.cache.find(c => c.name === CONFIG.logChannel && c.isTextBased());
+    if (!canal) return;
+    await canal.send({ embeds: [new EmbedBuilder()
+        .setTitle('🛡️ ANTINUKE — ACCIÓN BLOQUEADA')
         .setColor(0xFF0000)
         .addFields(
-            { name: 'Usuario Sancionado', value: `${offender} (${offender.id})`, inline: false },
-            { name: 'Víctima', value: `${victim} (${victim.id})`, inline: false },
-            { name: 'Rol Intentado', value: `${role} (${role.id})`, inline: false },
-            { name: 'Acción Tomada', value: action, inline: false }
+            { name: 'Usuario', value: `${usuario} (${usuario.id})`, inline: false },
+            { name: 'Acción', value: accion, inline: false },
+            { name: 'Detalle', value: detalle, inline: false }
         )
-        .setTimestamp();
-
-    await logChannel.send({ embeds: [embed] });
+        .setTimestamp()
+    ]});
 }
 
-// ==================== EVENTOS ====================
-
+// ==========================================
+// EVENTOS DE PROTECCIÓN ANTINUKE
+// ==========================================
 client.once(Events.ClientReady, () => {
-    console.log(`✅ Bot ${client.user.tag} conectado y protegiendo roles!`);
-    console.log(`📊 Servidores: ${client.guilds.cache.size}`);
-    console.log(`🔒 Rol de Owner protegido: ${CONFIG.ownerRoleId}`);
+    console.log(`✅ Bot ${client.user.tag} CONECTADO — ANTINUKE + LOCK + ,r MEJORADO`);
+    console.log(`🔒 Roles permitidos para Lock/Unlock: ${CONFIG.lockAllowedRoleIds.length} roles`);
+    console.log(`🛡️ WL: ${antinuke.data.whitelist.length} | Admins: ${antinuke.data.admins.length} | Límite canales: ${CONFIG.maxChannelsCreate}`);
+    console.log(`🎮 Comando ,r acepta: @usuario / ID / nombre + @rol / ID / nombre`);
 });
 
-client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
-    if (newMember.user.bot) return;
+// 🚨 CREACIÓN DE CANALES / CATEGORÍAS
+client.on(Events.ChannelCreate, async (canal) => {
+    const guild = canal.guild;
+    const entry = await getAuditEntry(guild, 10);
+    if (!entry || !entry.executor || entry.executor.bot) return;
 
-    const oldRoles = oldMember.roles.cache;
-    const newRoles = newMember.roles.cache;
-    
-    const addedRoles = newRoles.filter(role => !oldRoles.has(role.id));
-    if (addedRoles.size === 0) return;
+    const usuario = entry.executor;
+    const check = antinuke.checkLimit(guild.id, usuario.id);
 
-    await new Promise(resolve => setTimeout(resolve, 500));
+    if (check.noPermit) {
+        console.log(`🚫 ${usuario.tag} intentó crear canal SIN PERMISO — QUITANDO ROLES`);
+        try { await canal.delete('Antinuke: Sin autorización'); } catch {}
+        const miembro = await guild.members.fetch(usuario.id).catch(() => null);
+        if (miembro) await punishRemoveAllRoles(miembro, 'Creó canal sin estar en WL ni ser Admin');
+        await logSeguridad(guild, usuario, 'Creación de canal SIN PERMISO', 'Canal eliminado — Roles removidos');
+        return;
+    }
 
-    const auditEntry = await getAuditLogEntry(newMember.guild, newMember.id);
-    if (!auditEntry) return;
-
-    const executor = auditEntry.executor;
-    if (!executor || executor.bot || executor.id === newMember.id) return;
-
-    for (const [, role] of addedRoles) {
-        // 🛡️ PROTECCIÓN ESPECIAL DEL ROL DE OWNER
-        if (role.id === CONFIG.ownerRoleId) {
-            console.log(`🚨 INTENTO DE ASIGNAR ROL DE OWNER POR ${executor.tag} — BLOQUEADO`);
-            try {
-                await newMember.roles.remove(role, `PROTECCIÓN: Solo el Owner puede asignar este rol`);
-            } catch (e) {}
-            await logSecurityAction(
-                newMember.guild, executor, newMember.user, role, 
-                '🚫 BLOQUEADO — Este rol requiere permiso de Owner'
-            );
-            continue;
-        }
-
-        if (whitelist.isWhitelisted(newMember.guild.id, executor.id, role.id)) {
-            console.log(`✅ ${executor.tag} autorizado para dar rol ${role.name} a ${newMember.user.tag}`);
-            continue;
-        }
-
-        console.log(`🚨 ${executor.tag} intentó dar rol ${role.name} sin autorización`);
-
-        try {
-            await newMember.roles.remove(role, `Protección de seguridad: ${executor.tag} no tiene permiso`);
-            console.log(`✅ Rol ${role.name} revertido de ${newMember.user.tag}`);
-        } catch (error) {
-            console.error('Error quitando rol:', error);
-        }
-
-        const executorMember = await newMember.guild.members.fetch(executor.id).catch(() => null);
-        if (executorMember) {
-            await punishUser(executorMember, 'Protección de seguridad: Intento de asignar roles sin autorización');
-        }
-
-        await logSecurityAction(
-            newMember.guild, 
-            executor, 
-            newMember.user, 
-            role, 
-            'Rol revertido + Sanción aplicada (roles removidos al ofensor)'
-        );
+    if (!check.allowed) {
+        console.log(`⚠️ ${usuario.tag} superó límite de canales (${check.count}/${check.limit})`);
+        try { await canal.delete('Antinuke: Límite alcanzado'); } catch {}
+        const miembro = await guild.members.fetch(usuario.id).catch(() => null);
+        if (miembro) await punishRemoveAllRoles(miembro, `Superó límite de ${check.limit} canales`);
+        await logSeguridad(guild, usuario, 'Límite de canales superado', `${check.count}/${check.limit} — Roles removidos`);
     }
 });
 
-// ==================== COMANDOS ====================
+// 🚨 CAMBIOS AL SERVIDOR (nombre, foto)
+client.on(Events.GuildUpdate, async (viejo, nuevo) => {
+    const entry = await getAuditEntry(viejo, 1);
+    if (!entry || !entry.executor || entry.executor.bot) return;
+    const usuario = entry.executor;
 
-client.on(Events.MessageCreate, async (message) => {
-    if (message.author.bot || !message.content.startsWith(CONFIG.prefix)) return;
+    if (!antinuke.isAdmin(usuario.id)) {
+        const cambios = [];
+        if (viejo.name !== nuevo.name) cambios.push('Nombre del servidor');
+        if (viejo.icon !== nuevo.icon) cambios.push('Foto del servidor');
+        if (cambios.length === 0) return;
 
-    const args = message.content.slice(CONFIG.prefix.length).trim().split(/\s+/);
-    const command = args.shift().toLowerCase();
+        console.log(`🚫 ${usuario.tag} cambió servidor SIN PERMISO — QUITANDO ROLES`);
+        const miembro = await viejo.members.fetch(usuario.id).catch(() => null);
+        if (miembro) await punishRemoveAllRoles(miembro, `Cambió: ${cambios.join(', ')} — Solo Admin puede`);
+        await logSeguridad(viejo, usuario, 'Modificación del servidor SIN PERMISO', `${cambios.join(', ')} — Roles removidos`);
+    }
+});
 
+// 🚨 CREACIÓN DE ROLES
+client.on(Events.RoleCreate, async (rol) => {
+    const guild = rol.guild;
+    const entry = await getAuditEntry(guild, 30);
+    if (!entry || !entry.executor || entry.executor.bot) return;
+    const usuario = entry.executor;
+
+    if (!antinuke.isAdmin(usuario.id)) {
+        console.log(`🚫 ${usuario.tag} creó rol SIN PERMISO — QUITANDO ROLES`);
+        try { await rol.delete('Antinuke: Creación sin autorización'); } catch {}
+        const miembro = await guild.members.fetch(usuario.id).catch(() => null);
+        if (miembro) await punishRemoveAllRoles(miembro, 'Creó rol sin permiso — Solo Admin');
+        await logSeguridad(guild, usuario, 'Creación de rol SIN PERMISO', 'Rol eliminado — Roles removidos');
+    }
+});
+
+// 🚨 CAMBIO DE NOMBRE DE CANAL
+client.on(Events.ChannelUpdate, async (viejo, nuevo) => {
+    if (viejo.name === nuevo.name) return;
+    const guild = viejo.guild;
+    const entry = await getAuditEntry(guild, 11);
+    if (!entry || !entry.executor || entry.executor.bot) return;
+    const usuario = entry.executor;
+
+    if (!antinuke.isAdmin(usuario.id)) {
+        console.log(`🚫 ${usuario.tag} renombró canal SIN PERMISO — QUITANDO ROLES`);
+        const miembro = await guild.members.fetch(usuario.id).catch(() => null);
+        if (miembro) await punishRemoveAllRoles(miembro, 'Renombró canal sin permiso — Solo Admin');
+        await logSeguridad(guild, usuario, 'Renombrar canal SIN PERMISO', `${viejo.name} → ${nuevo.name} — Roles removidos`);
+    }
+});
+
+// 🚨 PROTECCIÓN ROL DE OWNER
+client.on(Events.GuildMemberUpdate, async (viejo, nuevo) => {
+    if (nuevo.user.bot) return;
+    const rolNuevo = nuevo.roles.cache.find(r => !viejo.roles.cache.has(r.id));
+    if (!rolNuevo) return;
+
+    const entry = await getAuditEntry(nuevo.guild, 24);
+    if (!entry || !entry.executor || entry.executor.bot) return;
+    const usuario = entry.executor;
+
+    if (rolNuevo.id === CONFIG.ownerRoleId) {
+        console.log(`🚫 ${usuario.tag} intentó dar ROL DE OWNER — BLOQUEADO`);
+        try { await nuevo.roles.remove(rolNuevo, 'PROTECCIÓN: Solo Owner puede asignarlo'); } catch {}
+        await logSeguridad(nuevo.guild, usuario, 'INTENTO ASIGNAR ROL DE OWNER', 'Bloqueado — Requiere permiso de Owner');
+    }
+});
+
+// ==========================================
+// COMANDOS
+// ==========================================
+client.on(Events.MessageCreate, async (msg) => {
+    if (msg.author.bot || !msg.content.startsWith(CONFIG.prefix)) return;
+    const args = msg.content.slice(CONFIG.prefix.length).trim().split(/\s+/);
+    const cmd = args.shift().toLowerCase();
+
+    // 🔒 ==================================================
+    // COMANDO LOCK / PAPI — BLOQUEAR CANAL
     // ==================================================
-    // ✅ COMANDO NUEVO: ,r [ID usuario] [nombre rol]
+    if (cmd === 'lock' || cmd === 'papi') {
+        if (!canUseLockCommands(msg.member)) {
+            return msg.reply('🚫 **NO TIENES PERMISO** — Solo los roles autorizados pueden bloquear el canal.');
+        }
+
+        const canal = msg.channel;
+        if (canal.type !== ChannelType.GuildText) {
+            return msg.reply('❌ Solo se pueden bloquear canales de texto.');
+        }
+
+        const permisosOriginales = canal.permissionOverwrites.cache.map(po => ({
+            id: po.id,
+            type: po.type,
+            allow: po.allow.bitfield.toString(),
+            deny: po.deny.bitfield.toString()
+        }));
+
+        lockedChannels.set(canal.id, {
+            permisosOriginales,
+            bloqueadoPor: msg.author.id
+        });
+
+        await canal.permissionOverwrites.edit(msg.guild.roles.everyone, {
+            SendMessages: false,
+            CreatePublicThreads: false,
+            CreatePrivateThreads: false
+        });
+
+        return msg.reply({ embeds: [new EmbedBuilder()
+            .setTitle('🔒 CANAL BLOQUEADO')
+            .setColor(0xFF0000)
+            .setDescription(`Este canal ha sido bloqueado por **${msg.author}**.\nYa no se pueden enviar mensajes.`)
+            .setTimestamp()
+        ]});
+    }
+
+    // 🔓 ==================================================
+    // COMANDO UNLOCK / UNPAPI — DESBLOQUEAR CANAL
     // ==================================================
-    if (command === 'r') {
+    if (cmd === 'unlock' || cmd === 'unpapi') {
+        if (!canUseLockCommands(msg.member)) {
+            return msg.reply('🚫 **NO TIENES PERMISO** — Solo los roles autorizados pueden desbloquear el canal.');
+        }
+
+        const canal = msg.channel;
+        const datosBloqueo = lockedChannels.get(canal.id);
+
+        if (!datosBloqueo) {
+            return msg.reply('❌ Este canal no está bloqueado.');
+        }
+
+        await canal.permissionOverwrites.edit(msg.guild.roles.everyone, {
+            SendMessages: true,
+            CreatePublicThreads: true,
+            CreatePrivateThreads: true
+        });
+
+        lockedChannels.delete(canal.id);
+
+        return msg.reply({ embeds: [new EmbedBuilder()
+            .setTitle('🔓 CANAL DESBLOQUEADO')
+            .setColor(0x00FF00)
+            .setDescription(`Este canal ha sido desbloqueado por **${msg.author}**.\n¡Ya se pueden enviar mensajes!`)
+            .setTimestamp()
+        ]});
+    }
+
+    // 🛡️ COMANDOS ANTINUKE
+    if (cmd === 'an' && args[0] === 'wl') {
+        if (!antinuke.isAdmin(msg.author.id) && msg.author.id !== msg.guild.ownerId) {
+            return msg.reply('🚫 No tienes permiso. Solo Admin AntiNuke o Owner.');
+        }
+        if (!args[1]) return msg.reply('❌ Uso: `,an wl <ID>`');
+        const usuario = await client.users.fetch(args[1]).catch(() => null);
+        if (!usuario) return msg.reply('❌ Usuario no encontrado.');
+        antinuke.addToWhitelist(args[1]);
+        return msg.reply(`✅ **${usuario}** agregado a WL.\nPuede crear hasta ${CONFIG.maxChannelsCreate} canales/categorías.`);
+    }
+
+    if (cmd === 'an' && args[0] === 'admin') {
+        if (msg.author.id !== msg.guild.ownerId) {
+            return msg.reply('🚫 **SOLO EL OWNER DEL SERVIDOR puede usar este comando.**');
+        }
+        if (!args[1]) return msg.reply('❌ Uso: `,an admin <ID>`');
+        const usuario = await client.users.fetch(args[1]).catch(() => null);
+        if (!usuario) return msg.reply('❌ Usuario no encontrado.');
+        antinuke.addAdmin(args[1]);
+        return msg.reply(`✅ **${usuario}** ahora es Admin AntiNuke.\nPuede: renombrar servidor, cambiar foto, crear roles, crear canales sin límite.`);
+    }
+
+    if (cmd === 'an' && args[0] === 'rwl') {
+        if (!antinuke.isAdmin(msg.author.id) && msg.author.id !== msg.guild.ownerId) {
+            return msg.reply('🚫 No tienes permiso.');
+        }
+        if (!args[1]) return msg.reply('❌ Uso: `,an rwl <ID>`');
+        antinuke.removeFromWhitelist(args[1]);
+        return msg.reply('✅ Removido de la Whitelist.');
+    }
+
+    if (cmd === 'an' && args[0] === 'list') {
+        const wl = antinuke.data.whitelist.map(id => `<@${id}>`).join('\n') || 'Nadie';
+        const admins = antinuke.data.admins.map(id => `<@${id}>`).join('\n') || 'Nadie';
+        return msg.reply({ embeds: [new EmbedBuilder()
+            .setTitle('🛡️ AntiNuke — Listas')
+            .setColor(0x2ECC71)
+            .addFields(
+                { name: `Whitelist (máx ${CONFIG.maxChannelsCreate} canales)`, value: wl, inline: true },
+                { name: 'Admin AntiNuke (todo sin límite)', value: admins, inline: true }
+            )
+            .setTimestamp()
+        ]});
+    }
+
+    // 🎮 COMANDO DAR ROL — MEJORADO ✨
+    if (cmd === 'r') {
         if (args.length < 2) {
-            return message.reply('❌ Uso correcto: `,r <ID_del_usuario> <nombre_del_rol>`\nEjemplo: `,r 1234567890 Moderador`');
+            return msg.reply('❌ **Uso:** `,r <@usuario / ID / nombre> <@rol / ID / nombre del rol>`\n\nEjemplos:\n`,r @Juan Moderador`\n`,r 123456789 @Moderador`');
         }
 
-        const targetId = args[0];
-        const roleName = args.slice(1).join(' ');
-
-        try {
-            // Buscar al usuario
-            const targetMember = await message.guild.members.fetch(targetId).catch(() => null);
-            if (!targetMember) {
-                return message.reply('❌ No encontré a ningún usuario con ese ID.');
-            }
-
-            // Buscar el rol por nombre
-            const role = message.guild.roles.cache.find(
-                r => r.name.toLowerCase() === roleName.toLowerCase()
+        // 🔍 BUSCAR AL USUARIO (mención, ID o nombre)
+        let usuarioObjetivo = null;
+        const entradaUsuario = args[0];
+        
+        // Caso 1: Es mención @usuario
+        const mencionUsuario = entradaUsuario.match(/^<@!?(\d+)>$/);
+        if (mencionUsuario) {
+            usuarioObjetivo = await msg.guild.members.fetch(mencionUsuario[1]).catch(() => null);
+        }
+        // Caso 2: Es un ID
+        else if (/^\d+$/.test(entradaUsuario)) {
+            usuarioObjetivo = await msg.guild.members.fetch(entradaUsuario).catch(() => null);
+        }
+        // Caso 3: Es nombre de usuario
+        else {
+            const busqueda = entradaUsuario.toLowerCase();
+            usuarioObjetivo = msg.guild.members.cache.find(m => 
+                m.user.username.toLowerCase() === busqueda ||
+                m.displayName.toLowerCase() === busqueda ||
+                m.user.tag.toLowerCase() === busqueda
             );
-            if (!role) {
-                return message.reply(`❌ No encontré el rol **"${roleName}"**. Verifica que esté bien escrito.`);
-            }
-
-            // 🛡️ PROTECCIÓN: Si es el rol de Owner, bloquear
-            if (role.id === CONFIG.ownerRoleId) {
-                return message.reply('🚫 **NO PUEDES DAR ESTE ROL**\n🔒 Este rol requiere permiso del Owner. No se puede asignar con comandos.');
-            }
-
-            // ✅ Asignar el rol
-            await targetMember.roles.add(role, `Asignado por ${message.author.tag} con comando ,r`);
-
-            return message.reply(`✅ **¡Rol asignado con éxito!**\n👤 Usuario: ${targetMember.user} (${targetMember.id})\n🏷️ Rol: ${role}`);
-
-        } catch (error) {
-            console.error('Error en comando ,r:', error);
-            return message.reply('❌ No pude dar el rol. Revisa que tenga permisos el bot y que el rol esté debajo del rol del bot.');
-        }
-    }
-
-    // Comando: whitelist_add
-    if (command === 'whitelist_add') {
-        if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
-            return message.reply('❌ Solo administradores pueden usar este comando.');
-        }
-        if (args.length < 1) {
-            return message.reply('❌ Uso: `,whitelist_add <user_id> [rol]`\nEjemplo: `,whitelist_add 123456789 all`');
         }
 
-        const userId = args[0];
-        const roleInput = args.slice(1).join(' ') || 'all';
-
-        try {
-            const user = await client.users.fetch(userId).catch(() => null);
-            if (!user) return message.reply('❌ No se encontró ningún usuario con ese ID.');
-
-            let roles = 'all';
-            if (roleInput.toLowerCase() !== 'all') {
-                const roleMention = roleInput.match(/<@&(\d+)>/);
-                const roleId = roleMention ? roleMention[1] : 
-                              message.guild.roles.cache.find(r => 
-                                  r.name.toLowerCase() === roleInput.toLowerCase() || 
-                                  r.id === roleInput
-                              )?.id;
-                if (!roleId) return message.reply(`❌ No se encontró el rol \`${roleInput}\`.`);
-                roles = [roleId];
-            }
-
-            whitelist.add(message.guild.id, userId, roles);
-
-            const embed = new EmbedBuilder()
-                .setTitle('✅ Usuario Agregado a Whitelist')
-                .setColor(0x00FF00)
-                .addFields(
-                    { name: 'Usuario', value: `${user} (${user.id})`, inline: false },
-                    { name: 'Permiso para asignar', value: roles === 'all' ? 'Todos los roles' : `<@&${roles[0]}>`, inline: false }
-                )
-                .setTimestamp();
-
-            await message.reply({ embeds: [embed] });
-        } catch (error) {
-            console.error(error);
-            message.reply('❌ Error al procesar el comando.');
-        }
-    }
-
-    if (command === 'whitelist_remove') {
-        if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
-            return message.reply('❌ Solo administradores pueden usar este comando.');
-        }
-        if (args.length < 1) return message.reply('❌ Uso: `,whitelist_remove <user_id>`');
-
-        const userId = args[0];
-        const success = whitelist.remove(message.guild.id, userId);
-
-        if (success) {
-            const user = await client.users.fetch(userId).catch(() => null);
-            message.reply(`✅ ${user ? user.toString() : userId} ha sido removido de la whitelist.`);
-        } else {
-            message.reply('❌ Ese usuario no estaba en la whitelist.');
-        }
-    }
-
-    if (command === 'whitelist_list') {
-        if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
-            return message.reply('❌ Solo administradores pueden usar este comando.');
+        if (!usuarioObjetivo) {
+            return msg.reply(`❌ No encontré al usuario: **${entradaUsuario}**\nUsa una mención, un ID o el nombre exacto.`);
         }
 
-        const list = whitelist.getList(message.guild.id);
-        const entries = Object.entries(list);
+        // 🔍 BUSCAR EL ROL (mención, ID o nombre)
+        const entradaRol = args.slice(1).join(' ');
+        let rolEncontrado = null;
 
-        if (entries.length === 0) {
-            return message.reply('📋 No hay usuarios en la whitelist.');
+        // Caso 1: Es mención @rol
+        const mencionRol = entradaRol.match(/^<@&(\d+)>$/);
+        if (mencionRol) {
+            rolEncontrado = msg.guild.roles.cache.get(mencionRol[1]);
+        }
+        // Caso 2: Es un ID
+        else if (/^\d+$/.test(entradaRol)) {
+            rolEncontrado = msg.guild.roles.cache.get(entradaRol);
+        }
+        // Caso 3: Es nombre del rol
+        else {
+            const busquedaRol = entradaRol.toLowerCase();
+            rolEncontrado = msg.guild.roles.cache.find(r => 
+                r.name.toLowerCase() === busquedaRol
+            );
         }
 
-        let description = '';
-        for (const [userId, roles] of entries) {
-            const user = await client.users.fetch(userId).catch(() => null);
-            const userStr = user ? user.toString() : `ID: ${userId}`;
-            
-            let roleStr;
-            if (roles === 'all') roleStr = 'Todos los roles';
-            else if (Array.isArray(roles)) {
-                roleStr = roles.map(rid => {
-                    const role = message.guild.roles.cache.get(rid);
-                    return role ? role.name : `ID:${rid}`;
-                }).join(', ');
-            } else roleStr = 'Desconocido';
-            
-            description += `• ${userStr} → ${roleStr}\n`;
+        if (!rolEncontrado) {
+            return msg.reply(`❌ No encontré el rol: **${entradaRol}**\nUsa una mención, un ID o el nombre exacto.`);
         }
 
-        const embed = new EmbedBuilder()
-            .setTitle('📋 Whitelist de Asignación de Roles')
-            .setColor(0x3498DB)
-            .setDescription(description)
-            .setTimestamp();
-
-        await message.reply({ embeds: [embed] });
-    }
-
-    if (command === 'emergency_clear') {
-        if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
-            return message.reply('❌ Solo administradores pueden usar este comando.');
+        // 🔒 PROTECCIÓN ROL DE OWNER
+        if (rolEncontrado.id === CONFIG.ownerRoleId) {
+            return msg.reply('🚫 **NO PUEDES DAR ESTE ROL**\n🔒 Este rol requiere permiso del Owner.');
         }
 
-        const confirmMessage = await message.reply('⚠️ Esto quitará TODOS los roles de TODOS los usuarios. Escribe `CONFIRMAR` para proceder.');
-
-        const filter = m => m.author.id === message.author.id && m.content === 'CONFIRMAR';
-        const collected = await message.channel.awaitMessages({ filter, max: 1, time: 30000, errors: ['time'] }).catch(() => null);
-
-        if (!collected) return message.reply('❌ Operación cancelada.');
-
-        message.reply('🔄 Procesando... Esto puede tardar.');
-
-        const members = await message.guild.members.fetch();
-        let count = 0;
-
-        for (const [, member] of members) {
-            if (member.user.bot) continue;
-            const rolesToRemove = member.roles.cache.filter(r => r.name !== '@everyone');
-            if (rolesToRemove.size > 0) {
-                try {
-                    await member.roles.set([]);
-                    count++;
-                } catch (error) {
-                    console.error(`Error quitando roles de ${member.user.tag}:`, error);
-                }
-            }
-        }
-
-        message.reply(`✅ Se quitaron roles de ${count} usuarios.`);
+        // ✅ ASIGNAR EL ROL
+        await usuarioObjetivo.roles.add(rolEncontrado, `Asignado por ${msg.author.tag}`);
+        
+        return msg.reply({ embeds: [new EmbedBuilder()
+            .setTitle('✅ ROL ASIGNADO CON ÉXITO')
+            .setColor(0x00FF00)
+            .addFields(
+                { name: '👤 Usuario', value: `${usuarioObjetivo.user}`, inline: true },
+                { name: '🏷️ Rol', value: `${rolEncontrado}`, inline: true },
+                { name: '👮 Por', value: `${msg.author}`, inline: true }
+            )
+            .setTimestamp()
+        ]});
     }
 });
 
-client.on(Events.Error, (error) => {
-    console.error('Error del cliente:', error);
-});
+client.on(Events.Error, e => console.error('Error:', e));
+process.on('unhandledRejection', e => console.error('Error:', e));
 
-process.on('unhandledRejection', (error) => {
-    console.error('Unhandled rejection:', error);
-});
-
-// Iniciar bot
+// INICIAR BOT
 client.login(CONFIG.token);
