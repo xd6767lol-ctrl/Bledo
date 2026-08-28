@@ -4,7 +4,7 @@ const path = require('path');
 
 // Configuración
 const CONFIG = {
-    token: 'TU_TOKEN_AQUI',
+token: process.env.DISCORD_TOKEN,
     prefix: ',',
     whitelistFile: './whitelist.json',
     // Roles que el bot NUNCA quitará (protección para admins/owner)
