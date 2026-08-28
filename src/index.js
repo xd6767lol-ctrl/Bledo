@@ -25,9 +25,9 @@ const CONFIG = {
   token: process.env.DISCORD_TOKEN,
   prefix: ',',
   whitelistFile: './whitelist.json',
-  // Roles que el bot NUNCA quitará (protección para admins/owner)
+  // ⚠️ ROL DE OWNER PROTEGIDO — PON AQUÍ EL ID DEL ROL DE DUEÑO
+  ownerRoleId: 'PON_AQUÍ_EL_ID_DEL_ROL_OWNER', // 👈 CAMBIA ESTO POR EL ID REAL
   protectedRoles: ['ADMINISTRATOR'],
-  // Canal donde se enviarán logs de seguridad (opcional, puede ser null)
   logChannel: 'seguridad'
 };
 
@@ -191,6 +191,7 @@ async function logSecurityAction(guild, offender, victim, role, action) {
 client.once(Events.ClientReady, () => {
     console.log(`✅ Bot ${client.user.tag} conectado y protegiendo roles!`);
     console.log(`📊 Servidores: ${client.guilds.cache.size}`);
+    console.log(`🔒 Rol de Owner protegido: ${CONFIG.ownerRoleId}`);
 });
 
 client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
@@ -211,6 +212,19 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
     if (!executor || executor.bot || executor.id === newMember.id) return;
 
     for (const [, role] of addedRoles) {
+        // 🛡️ PROTECCIÓN ESPECIAL DEL ROL DE OWNER
+        if (role.id === CONFIG.ownerRoleId) {
+            console.log(`🚨 INTENTO DE ASIGNAR ROL DE OWNER POR ${executor.tag} — BLOQUEADO`);
+            try {
+                await newMember.roles.remove(role, `PROTECCIÓN: Solo el Owner puede asignar este rol`);
+            } catch (e) {}
+            await logSecurityAction(
+                newMember.guild, executor, newMember.user, role, 
+                '🚫 BLOQUEADO — Este rol requiere permiso de Owner'
+            );
+            continue;
+        }
+
         if (whitelist.isWhitelisted(newMember.guild.id, executor.id, role.id)) {
             console.log(`✅ ${executor.tag} autorizado para dar rol ${role.name} a ${newMember.user.tag}`);
             continue;
@@ -248,6 +262,49 @@ client.on(Events.MessageCreate, async (message) => {
     const args = message.content.slice(CONFIG.prefix.length).trim().split(/\s+/);
     const command = args.shift().toLowerCase();
 
+    // ==================================================
+    // ✅ COMANDO NUEVO: ,r [ID usuario] [nombre rol]
+    // ==================================================
+    if (command === 'r') {
+        if (args.length < 2) {
+            return message.reply('❌ Uso correcto: `,r <ID_del_usuario> <nombre_del_rol>`\nEjemplo: `,r 1234567890 Moderador`');
+        }
+
+        const targetId = args[0];
+        const roleName = args.slice(1).join(' ');
+
+        try {
+            // Buscar al usuario
+            const targetMember = await message.guild.members.fetch(targetId).catch(() => null);
+            if (!targetMember) {
+                return message.reply('❌ No encontré a ningún usuario con ese ID.');
+            }
+
+            // Buscar el rol por nombre
+            const role = message.guild.roles.cache.find(
+                r => r.name.toLowerCase() === roleName.toLowerCase()
+            );
+            if (!role) {
+                return message.reply(`❌ No encontré el rol **"${roleName}"**. Verifica que esté bien escrito.`);
+            }
+
+            // 🛡️ PROTECCIÓN: Si es el rol de Owner, bloquear
+            if (role.id === CONFIG.ownerRoleId) {
+                return message.reply('🚫 **NO PUEDES DAR ESTE ROL**\n🔒 Este rol requiere permiso del Owner. No se puede asignar con comandos.');
+            }
+
+            // ✅ Asignar el rol
+            await targetMember.roles.add(role, `Asignado por ${message.author.tag} con comando ,r`);
+
+            return message.reply(`✅ **¡Rol asignado con éxito!**\n👤 Usuario: ${targetMember.user} (${targetMember.id})\n🏷️ Rol: ${role}`);
+
+        } catch (error) {
+            console.error('Error en comando ,r:', error);
+            return message.reply('❌ No pude dar el rol. Revisa que tenga permisos el bot y que el rol esté debajo del rol del bot.');
+        }
+    }
+
+    // Comando: whitelist_add
     if (command === 'whitelist_add') {
         if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
             return message.reply('❌ Solo administradores pueden usar este comando.');
