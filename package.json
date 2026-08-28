@@ -1,5 +1,13 @@
 {
+  "name": "bledo-bot",
+  "version": "1.0.0",
   "scripts": {
     "start": "node src/index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.17.3"
+  },
+  "engines": {
+    "node": "20.x"
   }
 }
