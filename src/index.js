@@ -180,12 +180,49 @@ client.once(Events.ClientReady, () => {
 });
 
 // ==========================================
-// COMMANDS — ESTILO BLEED
+// COMMANDS — ESTILO BLEED + HELP / CMD
 // ==========================================
 client.on(Events.MessageCreate, async (msg) => {
     if (msg.author.bot || !msg.content.startsWith(CONFIG.prefix)) return;
     const args = msg.content.slice(CONFIG.prefix.length).trim().split(/\s+/);
     const cmd = args.shift()?.toLowerCase();
+
+    // ======================================
+    // HELP / CMD — TODOS LOS COMANDOS 🆕
+    // ======================================
+    if (cmd === 'help' || cmd === 'cmd') {
+        return msg.reply(`
+=== COMANDOS DEL BOT ===
+
+> ANTINUKE
+,antinuke addadmin <ID>    → Agregar Admin AntiNuke
+,antinuke removeadmin <ID> → Eliminar Admin AntiNuke
+,antinuke listadmins       → Ver lista de Admins
+
+> ROLES
+,r add <usuario> <rol>     → Asignar rol
+,r remove <usuario> <rol> → Quitar rol
+
+> WHITELIST
+,whitelist add <ID> all    → Agregar a Whitelist (Todo)
+,whitelist add <ID> pings  → Agregar a Whitelist (Pings)
+,whitelist remove <ID>     → Eliminar de Whitelist
+,whitelist list            → Ver Whitelist
+
+> SEGURIDAD
+,hb / hardban <usuario> [razón] → Banear (solo reacción 👍)
+,lock / papi              → Bloquear canal
+,unlock / unpapi          → Desbloquear canal
+
+> LIMPIEZA
+,c <cantidad>             → Borrar mensajes (1-100)
+,s                        → Ver contenido eliminado
+,cs                       → Limpiar historial
+
+> GENERAL
+,help / ,cmd              → Mostrar esta lista
+        `);
+    }
 
     // ======================================
     // HARDBAN / HB — Solo reacción 👍
