@@ -7,8 +7,8 @@ const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-app.get('/', (req, res) => res.send('Bot Online — Hardban + AntiNuke + Clear + Ping Protection + Fixed Logs'));
-app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
+app.get('/', (req, res) => res.send('Online — Bleed System'));
+app.listen(PORT, '0.0.0.0', () => console.log(`Running on port ${PORT}`));
 
 const CONFIG = {
   token: process.env.DISCORD_TOKEN,
@@ -28,7 +28,7 @@ const CONFIG = {
 };
 
 // ==========================================
-// CLIENT INITIALIZATION
+// CLIENT INIT
 // ==========================================
 const client = new Client({
   intents: [
@@ -41,21 +41,21 @@ const client = new Client({
 });
 
 // ==========================================
-// DATA STORAGE — ALMACENAMIENTO DE MENSAJES
+// DATA STORAGE
 // ==========================================
 let lastClearedUserId = null;
 let deletedMessagesLog = [];
 let lastClearedMessages = [];
 
 // ==========================================
-// WHITELIST MANAGEMENT
+// WHITELIST
 // ==========================================
 class WhitelistManager {
     constructor() { this.data = this.load(); }
     load() {
         try {
             if (fs.existsSync(CONFIG.whitelistFile)) return JSON.parse(fs.readFileSync(CONFIG.whitelistFile, 'utf8'));
-        } catch (e) { console.error('Whitelist load error:', e); }
+        } catch (e) { console.error(e); }
         return { all: [], pings: [] };
     }
     save() { fs.writeFileSync(CONFIG.whitelistFile, JSON.stringify(this.data, null, 4)); }
@@ -82,14 +82,14 @@ class WhitelistManager {
 const whitelist = new WhitelistManager();
 
 // ==========================================
-// ANTINUKE MANAGEMENT
+// ANTINUKE
 // ==========================================
 class AntiNukeManager {
     constructor() { this.data = this.load(); this.actionTracker = {}; }
     load() {
         try {
             if (fs.existsSync(CONFIG.antinukeFile)) return JSON.parse(fs.readFileSync(CONFIG.antinukeFile, 'utf8'));
-        } catch (e) { console.error('AntiNuke load error:', e); }
+        } catch (e) { console.error(e); }
         return { whitelist: [], admins: [] };
     }
     save() { fs.writeFileSync(CONFIG.antinukeFile, JSON.stringify(this.data, null, 4)); }
@@ -120,7 +120,7 @@ class AntiNukeManager {
 const antinuke = new AntiNukeManager();
 
 // ==========================================
-// PERMISSION CHECKS
+// PERMISSIONS
 // ==========================================
 function isOwnerOrAdmin(member) {
   if (member.id === member.guild.ownerId) return true;
@@ -135,7 +135,7 @@ function canUseLockCommands(member) {
 }
 
 // ==========================================
-// UTILITY FUNCTIONS
+// UTILS
 // ==========================================
 async function punishRemoveAllRoles(member, reason) {
     try {
@@ -144,8 +144,7 @@ async function punishRemoveAllRoles(member, reason) {
         );
         if (rolesToRemove.size === 0) return;
         await member.roles.set([], reason);
-        console.log(`Removed ${rolesToRemove.size} roles from ${member.user.tag}`);
-    } catch (e) { console.error('Role removal error:', e); }
+    } catch (e) {}
 }
 
 async function getAuditEntry(guild, actionType, limit = 5) {
@@ -158,39 +157,30 @@ async function getAuditEntry(guild, actionType, limit = 5) {
 async function logSecurity(guild, user, action, details) {
     const channel = guild.channels.cache.find(c => c.name === CONFIG.logChannel && c.isTextBased());
     if (!channel) return;
-    await channel.send(`[SECURITY] ${action}\nUser: ${user} (${user.id})\nDetails: ${details}`);
+    await channel.send(`[SECURITY] ${action} | ${user.tag} (${user.id})\n${details}`);
 }
 
 // ==========================================
-// PING PROTECTION — DUEÑO EXENTO, BORRA SIN REENVIAR
+// PING PROTECTION — Owner Exempt, Delete Only
 // ==========================================
 client.on(Events.MessageCreate, async (msg) => {
     if (msg.author.bot) return;
     if (!msg.guild) return;
-
-    // Dueño del servidor SIEMPRE exento
     if (msg.author.id === msg.guild.ownerId) return;
-
-    // Borra menciones everyone sin permiso — SIN reenviar
     if (msg.mentions.everyone && !whitelist.canPingEveryone(msg.author.id)) {
-        try { await msg.delete(); } catch (e) { console.error('Delete error:', e); }
+        try { await msg.delete(); } catch {}
     }
 });
 
 // ==========================================
-// BOT READY
+// READY
 // ==========================================
 client.once(Events.ClientReady, () => {
-    console.log(`Bot Ready — Logged in as ${client.user.tag}`);
-    console.log(`Whitelist (All): ${whitelist.data.all.length} entries`);
-    console.log(`Whitelist (Pings): ${whitelist.data.pings.length} entries`);
-    console.log(`AntiNuke Admins: ${antinuke.data.admins.length} entries`);
-    console.log('Commands Active: hardban, hb, clear, cs, s, lock, whitelist, r');
-    console.log('Log System Fixed — ,s shows deleted messages correctly');
+    console.log(`Logged in as ${client.user.tag}`);
 });
 
 // ==========================================
-// COMMAND HANDLER
+// COMMANDS — ESTILO BLEED
 // ==========================================
 client.on(Events.MessageCreate, async (msg) => {
     if (msg.author.bot || !msg.content.startsWith(CONFIG.prefix)) return;
@@ -198,125 +188,110 @@ client.on(Events.MessageCreate, async (msg) => {
     const cmd = args.shift()?.toLowerCase();
 
     // ======================================
-    // HARDBAN / HB — SOLO REACCIÓN 👍
+    // HARDBAN / HB — Solo reacción 👍
     // ======================================
     if (cmd === 'hardban' || cmd === 'hb') {
-        if (!isOwnerOrAdmin(msg.member)) {
-            return msg.reply('You do not have admin privileges. Request admin access from an owner.');
-        }
-        if (args.length === 0) {
-            return msg.reply('Command: hardban\nKeep a member banned\n\nSyntax: ,hardban (member) (reason)\nExample: ,hardban derek spaming');
-        }
+        if (!isOwnerOrAdmin(msg.member)) return msg.reply('Permisos insuficientes.');
+        if (args.length === 0) return msg.reply('Uso: ,hb <usuario> <razón>');
+        
         const target = args[0];
-        const reason = args.slice(1).join(' ') || 'No reason provided';
-        try {
-            let userId = null;
-            const mentionMatch = target.match(/^<@!?(\d+)>$/);
-            if (mentionMatch) userId = mentionMatch[1];
-            else if (/^\d+$/.test(target)) userId = target;
-            else return msg.reply('Command: hardban\nKeep a member banned\n\nSyntax: ,hardban (member) (reason)\nExample: ,hardban derek spaming');
+        const reason = args.slice(1).join(' ') || 'Sin razón';
+        let userId = null;
+        const mentionMatch = target.match(/^<@!?(\d+)>$/);
+        if (mentionMatch) userId = mentionMatch[1];
+        else if (/^\d+$/.test(target)) userId = target;
+        else return msg.reply('Usuario inválido.');
 
-            if (userId === msg.author.id) return msg.reply('You cannot ban yourself.');
-            if (userId === msg.guild.ownerId) return msg.reply('You cannot ban the server owner.');
+        if (userId === msg.author.id) return msg.reply('No puedes banearte a ti mismo.');
+        if (userId === msg.guild.ownerId) return msg.reply('No puedes banear al dueño.');
 
-            await msg.guild.members.ban(userId, { reason: reason, deleteMessageSeconds: 0 });
-            await msg.react('👍').catch(() => {});
-            return;
-        } catch (e) {
-            console.error('Ban error:', e);
-            return msg.reply('Failed to ban the specified user.');
-        }
+        await msg.guild.members.ban(userId, { reason, deleteMessageSeconds: 0 });
+        await msg.react('👍').catch(() => {});
+        return;
     }
 
     // ======================================
-    // ANTINUKE ADMIN MANAGEMENT
+    // ANTINUKE
     // ======================================
     if (cmd === 'antinuke') {
-        if (!isOwnerOrAdmin(msg.member)) {
-            return msg.reply('You do not have admin privileges. Request admin access from an owner.');
-        }
+        if (!isOwnerOrAdmin(msg.member)) return msg.reply('Permisos insuficientes.');
         const action = args[0]?.toLowerCase();
         const id = args[1];
         if (action === 'addadmin' && id) {
             antinuke.addAdmin(id);
-            return msg.reply(`User <@${id}> added as AntiNuke Admin.`);
+            return msg.reply(`Agregado: <@${id}> como Admin AntiNuke.`);
         }
         if (action === 'removeadmin' && id) {
             antinuke.removeAdmin(id);
-            return msg.reply(`User <@${id}> removed from AntiNuke Admins.`);
+            return msg.reply(`Eliminado: <@${id}> de Admins.`);
         }
         if (action === 'listadmins') {
-            return msg.reply(`AntiNuke Admins: ${antinuke.data.admins.map(i => `<@${i}>`).join(', ') || 'None'}`);
+            return msg.reply(`Admins: ${antinuke.data.admins.map(i => `<@${i}>`).join(', ') || 'Ninguno'}`);
         }
-        return msg.reply('Usage: ,antinuke addadmin <ID> | ,antinuke removeadmin <ID> | ,antinuke listadmins');
+        return msg.reply('Uso: ,antinuke addadmin <ID> | removeadmin <ID> | listadmins');
     }
 
     // ======================================
     // LOCK / UNLOCK
     // ======================================
     if (cmd === 'lock' || cmd === 'papi') {
-        if (!canUseLockCommands(msg.member)) return msg.reply('Insufficient permissions.');
+        if (!canUseLockCommands(msg.member)) return msg.reply('Permisos insuficientes.');
         if (msg.channel.type !== ChannelType.GuildText) return;
         await msg.channel.permissionOverwrites.edit(msg.guild.roles.everyone, {
-            SendMessages: false,
-            CreatePublicThreads: false,
-            CreatePrivateThreads: false
+            SendMessages: false, CreatePublicThreads: false, CreatePrivateThreads: false
         });
-        return msg.reply('Channel locked.');
+        return msg.reply('Canal bloqueado.');
     }
     if (cmd === 'unlock' || cmd === 'unpapi') {
-        if (!canUseLockCommands(msg.member)) return msg.reply('Insufficient permissions.');
+        if (!canUseLockCommands(msg.member)) return msg.reply('Permisos insuficientes.');
         await msg.channel.permissionOverwrites.edit(msg.guild.roles.everyone, {
-            SendMessages: true,
-            CreatePublicThreads: true,
-            CreatePrivateThreads: true
+            SendMessages: true, CreatePublicThreads: true, CreatePrivateThreads: true
         });
-        return msg.reply('Channel unlocked.');
+        return msg.reply('Canal desbloqueado.');
     }
 
     // ======================================
-    // WHITELIST MANAGEMENT
+    // WHITELIST
     // ======================================
     if (cmd === 'whitelist') {
         if (msg.author.id !== msg.guild.ownerId && !antinuke.isAdmin(msg.author.id)) {
-            return msg.reply('Insufficient permissions.');
+            return msg.reply('Permisos insuficientes.');
         }
         const action = args[0]?.toLowerCase();
         if (action === 'add' && args[2]?.toLowerCase() === 'all') {
             const id = args[1];
-            if (!/^\d+$/.test(id)) return msg.reply('Usage: ,whitelist add <ID> all');
+            if (!/^\d+$/.test(id)) return msg.reply('Uso: ,whitelist add <ID> all');
             whitelist.addAll(id);
-            return msg.reply(`User <@${id}> added to whitelist (All).`);
+            return msg.reply(`<@${id}> → Whitelist (All).`);
         }
         if (action === 'add' && args[2]?.toLowerCase() === 'pings') {
             const id = args[1];
-            if (!/^\d+$/.test(id)) return msg.reply('Usage: ,whitelist add <ID> pings');
+            if (!/^\d+$/.test(id)) return msg.reply('Uso: ,whitelist add <ID> pings');
             whitelist.addPings(id);
-            return msg.reply(`User <@${id}> added to whitelist (Pings).`);
+            return msg.reply(`<@${id}> → Whitelist (Pings).`);
         }
         if (action === 'remove') {
             const id = args[1];
             whitelist.remove(id);
-            return msg.reply(`User <@${id}> removed from whitelist.`);
+            return msg.reply(`<@${id}> → Eliminado de Whitelist.`);
         }
         if (action === 'list') {
-            return msg.reply(`Whitelist (All): ${whitelist.data.all.map(i => `<@${i}>`).join(', ') || 'None'}\nWhitelist (Pings): ${whitelist.data.pings.map(i => `<@${i}>`).join(', ') || 'None'}`);
+            return msg.reply(`All: ${whitelist.data.all.map(i => `<@${i}>`).join(', ') || 'Ninguno'}\nPings: ${whitelist.data.pings.map(i => `<@${i}>`).join(', ') || 'Ninguno'}`);
         }
     }
 
     // ======================================
-    // ROLE MANAGEMENT
+    // ROLES — Formato Bleed
     // ======================================
     if (cmd === 'r') {
         const action = args[0]?.toLowerCase();
         if (!action || !['add', 'remove'].includes(action)) {
-            return msg.reply('Usage: ,r add <@user> <@role> | ,r remove <@user> <@role>');
+            return msg.reply('Uso: ,r add <usuario> <rol> | ,r remove <usuario> <rol>');
         }
         const userInput = args[1];
         const roleInput = args.slice(2).join(' ');
-        if (!userInput || !roleInput) {
-            return msg.reply('Usage: ,r add <@user> <@role> | ,r remove <@user> <@role>');
-        }
+        if (!userInput || !roleInput) return msg.reply('Faltan argumentos.');
+        
         let member = null;
         const userMatch = userInput.match(/^<@!?(\d+)>$/);
         if (userMatch) member = await msg.guild.members.fetch(userMatch[1]).catch(() => null);
@@ -325,93 +300,79 @@ client.on(Events.MessageCreate, async (msg) => {
             m.user.username.toLowerCase() === userInput.toLowerCase() ||
             m.displayName.toLowerCase() === userInput.toLowerCase()
         );
-        if (!member) return msg.reply('User not found.');
+        if (!member) return msg.reply('Usuario no encontrado.');
+
         let role = null;
         const roleMatch = roleInput.match(/^<@&(\d+)>$/);
         if (roleMatch) role = msg.guild.roles.cache.get(roleMatch[1]);
         else if (/^\d+$/.test(roleInput)) role = msg.guild.roles.cache.get(roleInput);
         else role = msg.guild.roles.cache.find(r => r.name.toLowerCase() === roleInput.toLowerCase());
-        if (!role) return msg.reply('Role not found.');
-        if (role.id === CONFIG.ownerRoleId) return msg.reply('This role cannot be assigned.');
+        if (!role) return msg.reply('Rol no encontrado.');
+        if (role.id === CONFIG.ownerRoleId) return msg.reply('Rol protegido.');
+
         if (action === 'add') {
-            await member.roles.add(role, `By ${msg.author.tag}`);
-            return msg.channel.send(`${msg.author} : Set ${role} as an award role`);
+            await member.roles.add(role, `Por ${msg.author.tag}`);
+            return msg.channel.send(`${msg.author} — Asignado: ${role.name}`);
         } else {
-            await member.roles.remove(role, `By ${msg.author.tag}`);
-            return msg.channel.send(`${msg.author} : Removed ${role} as an award role`);
+            await member.roles.remove(role, `Por ${msg.author.tag}`);
+            return msg.channel.send(`${msg.author} — Removido: ${role.name}`);
         }
     }
 
     // ======================================
-    // CLEAR — GUARDA TODO EL CONTENIDO
+    // CLEAR
     // ======================================
     if (cmd === 'c') {
-        if (!canUseLockCommands(msg.member)) return msg.reply('Insufficient permissions.');
+        if (!canUseLockCommands(msg.member)) return msg.reply('Permisos insuficientes.');
         const amount = parseInt(args[0]);
-        if (!amount || amount < 1 || amount > 100) {
-            return msg.reply('Usage: ,c <amount> (1-100)');
-        }
+        if (!amount || amount < 1 || amount > 100) return msg.reply('Cantidad: 1-100.');
         try {
             await msg.delete();
             const messages = await msg.channel.messages.fetch({ limit: amount });
-            
-            // ✅ GUARDA TODO: CONTENIDO, AUTORES, ADJUNTOS
             lastClearedMessages = Array.from(messages.values()).map(m => ({
                 id: m.id,
                 authorTag: m.author.tag,
                 authorId: m.author.id,
-                content: m.content || 'No text content',
+                content: m.content || 'Sin contenido',
                 attachments: m.attachments.map(a => ({ url: a.url, name: a.name })),
                 timestamp: m.createdAt
             }));
-            
             if (lastClearedMessages.length > 0) {
                 lastClearedUserId = lastClearedMessages[0].authorId;
                 deletedMessagesLog = [...lastClearedMessages, ...deletedMessagesLog].slice(0, 50);
             }
-            
             await msg.channel.bulkDelete(messages, true);
-            return msg.reply(`Cleared ${messages.size} messages. Use ,s to view content.`);
-        } catch (e) { 
-            console.error('Clear error:', e); 
-            return msg.reply('Failed to clear messages.');
-        }
+            return msg.reply(`Eliminados: ${messages.size} mensajes. Usa ,s para ver.`);
+        } catch (e) { return msg.reply('Error al borrar.'); }
     }
 
     if (cmd === 'cs') {
-        if (!canUseLockCommands(msg.member)) return msg.reply('Insufficient permissions.');
+        if (!canUseLockCommands(msg.member)) return msg.reply('Permisos insuficientes.');
         deletedMessagesLog = [];
         lastClearedMessages = [];
         lastClearedUserId = null;
-        return msg.reply('Message history cleared.');
+        return msg.reply('Historial limpiado.');
     }
 
     // ======================================
-    // S — MUESTRA LOS MENSAJES ELIMINADOS ✅ CORREGIDO
+    // SHOW LOGS
     // ======================================
     if (cmd === 's') {
-        if (!canUseLockCommands(msg.member)) return msg.reply('Insufficient permissions.');
-        
+        if (!canUseLockCommands(msg.member)) return msg.reply('Permisos insuficientes.');
         if (!lastClearedMessages || lastClearedMessages.length === 0) {
-            return msg.reply('No deleted messages recorded. Use ,c first.');
+            return msg.reply('Sin registros. Usa ,c primero.');
         }
-
         try {
-            let output = `Deleted Messages (${lastClearedMessages.length}):\n\n`;
+            let output = `=== ${lastClearedMessages.length} mensajes eliminados ===\n\n`;
             const files = [];
-
             lastClearedMessages.forEach((m, i) => {
-                output += `${i + 1}. ${m.authorTag} — ${new Date(m.timestamp).toLocaleString('es-MX')}\n`;
-                output += `Content: ${m.content}\n`; // ✅ MUESTRA EL CONTENIDO REAL
+                output += `${i + 1}. ${m.authorTag} | ${new Date(m.timestamp).toLocaleString('es-MX')}\n`;
+                output += `${m.content}\n`;
                 if (m.attachments.length > 0) {
-                    m.attachments.forEach(a => {
-                        output += `Attachment: ${a.name} — ${a.url}\n`;
-                    });
+                    m.attachments.forEach(a => output += `Archivo: ${a.name}\n`);
                 }
-                output += '----------------------------------------\n';
+                output += `---\n`;
             });
-
-            // Manejar imágenes
             const images = lastClearedMessages.flatMap(m => m.attachments).filter(a => 
                 /\.(png|jpg|jpeg|gif|webp)$/i.test(a.url)
             );
@@ -420,35 +381,22 @@ client.on(Events.MessageCreate, async (msg) => {
                     files.push(new AttachmentBuilder(img.url, { name: img.name }));
                 }
             }
-
-            // Enviar como archivo si es muy largo
             if (output.length > 1900) {
-                const fileName = `deleted_messages_${Date.now()}.txt`;
+                const fileName = `deleted_${Date.now()}.txt`;
                 fs.writeFileSync(fileName, output);
                 const file = new AttachmentBuilder(fileName);
-                if (files.length > 0) {
-                    await msg.channel.send({ files: [file, ...files] });
-                } else {
-                    await msg.channel.send({ files: [file] });
-                }
+                await msg.channel.send({ files: files.length > 0 ? [file, ...files] : [file] });
                 fs.unlinkSync(fileName);
             } else {
-                if (files.length > 0) {
-                    await msg.channel.send({ content: output, files: files });
-                } else {
-                    await msg.channel.send(output);
-                }
+                await msg.channel.send({ content: output, files });
             }
-        } catch (e) { 
-            console.error('Log error:', e); 
-            return msg.reply('Failed to retrieve message logs.');
-        }
+        } catch (e) { return msg.reply('Error al leer registros.'); }
         return;
     }
 });
 
 // ==========================================
-// ANTINUKE EVENT HANDLERS
+// ANTINUKE EVENTS
 // ==========================================
 client.on(Events.ChannelCreate, async (channel) => {
     const entry = await getAuditEntry(channel.guild, 10);
@@ -457,8 +405,8 @@ client.on(Events.ChannelCreate, async (channel) => {
     if (check.noPermit || !check.allowed) {
         try { await channel.delete(); } catch {}
         const member = await channel.guild.members.fetch(entry.executor.id).catch(() => null);
-        if (member) await punishRemoveAllRoles(member, 'Unauthorized channel creation');
-        await logSecurity(channel.guild, entry.executor, 'Channel Creation', 'Blocked');
+        if (member) await punishRemoveAllRoles(member, 'Canal no autorizado');
+        await logSecurity(channel.guild, entry.executor, 'Creación de canal', 'Bloqueado');
     }
 });
 
@@ -467,8 +415,8 @@ client.on(Events.GuildUpdate, async (oldGuild, newGuild) => {
     if (!entry || !entry.executor || entry.executor.bot) return;
     if (!antinuke.isAdmin(entry.executor.id)) {
         const member = await oldGuild.members.fetch(entry.executor.id).catch(() => null);
-        if (member) await punishRemoveAllRoles(member, 'Unauthorized server modification');
-        await logSecurity(oldGuild, entry.executor, 'Server Modification', 'Blocked');
+        if (member) await punishRemoveAllRoles(member, 'Modificación del servidor');
+        await logSecurity(oldGuild, entry.executor, 'Modificación del servidor', 'Bloqueado');
     }
 });
 
@@ -478,8 +426,8 @@ client.on(Events.RoleCreate, async (role) => {
     if (!antinuke.isAdmin(entry.executor.id)) {
         try { await role.delete(); } catch {}
         const member = await role.guild.members.fetch(entry.executor.id).catch(() => null);
-        if (member) await punishRemoveAllRoles(member, 'Unauthorized role creation');
-        await logSecurity(role.guild, entry.executor, 'Role Creation', 'Blocked');
+        if (member) await punishRemoveAllRoles(member, 'Creación de rol');
+        await logSecurity(role.guild, entry.executor, 'Creación de rol', 'Bloqueado');
     }
 });
 
