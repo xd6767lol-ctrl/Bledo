@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits, Partials, PermissionFlagsBits, AuditLogEvent, EmbedBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, PermissionFlagsBits, AuditLogEvent, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -17,10 +17,11 @@ const config = {
       categoriasMax: 1,
       canalesMax: 2
     }
-  }
+  },
+  rolesPorPagina: 10 // Igual que en la foto — 10 roles por página
 };
 
-// 🤖 CLIENTE DISCORD — ✅ CORREGIDO, SIN INTENTS INVÁLIDOS
+// 🤖 CLIENTE DISCORD
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -40,10 +41,10 @@ const log = {
   error: m => console.log(`[ERROR] ${m}`)
 };
 
-// 🛡️ SISTEMA DE PERMISOS EXACTO
+// 🛡️ SISTEMA DE PERMISOS
 const sistema = {
-  admins: new Set(),      // ,an admin → TODO sin límite
-  whitelist: new Set(),   // ,an wl → 1 categoría + 2 canales máximo
+  admins: new Set(),
+  whitelist: new Set(),
   contadores: new Map(),
 
   nivelPermiso(usuarioId, servidorId) {
@@ -66,7 +67,7 @@ client.on('ready', () => {
   client.user.setActivity(',help | Protegiendo el servidor', { type: 3 });
 });
 
-// VIGILAR CREACIÓN DE CANALES Y CATEGORÍAS
+// VIGILAR CREACIÓN DE CANALES
 client.on('channelCreate', async (canal) => {
   if (!canal.guild) return;
   const audit = await canal.guild.fetchAuditLogs({ type: AuditLogEvent.ChannelCreate, limit: 1 }).catch(() => null);
@@ -136,21 +137,56 @@ client.on('messageCreate', async (mensaje) => {
   const args = mensaje.content.slice(config.prefix.length).trim().split(/ +/);
   const cmd = args.shift()?.toLowerCase();
 
-  // ========== COMANDO ,roles — MUESTRA TODOS LOS ROLES NUMERADOS ==========
+  // ========== COMANDO ,roles — ESTILO EXACTO DE LA FOTO ==========
   if (cmd === 'roles') {
-    const roles = mensaje.guild.roles.cache
-      .filter(r => r.id !== mensaje.guild.id)
-      .sort((a, b) => b.position - a.position)
-      .map((rol, index) => `**${index + 1}.** ${rol.name} — <@&${rol.id}>`)
-      .join('\n');
+    const todosRoles = mensaje.guild.roles.cache
+      .filter(r => r.id !== mensaje.guild.id) // Quita @everyone
+      .sort((a, b) => b.position - a.position) // Ordena de arriba hacia abajo
+      .map(rol => `@${rol.name} (${rol.id})`); // Formato exacto: @nombre (ID)
 
-    const embed = new EmbedBuilder()
-      .setColor(0x5865F2)
-      .setTitle(`📋 Lista de Roles — ${mensaje.guild.name}`)
-      .setDescription(roles)
-      .setFooter({ text: `Total: ${mensaje.guild.roles.cache.size - 1} roles` });
+    const totalPaginas = Math.ceil(todosRoles.length / config.rolesPorPagina);
+    let paginaActual = 1;
 
-    return mensaje.reply({ embeds: [embed] });
+    // Función para generar la página
+    const generarPagina = (pagina) => {
+      const inicio = (pagina - 1) * config.rolesPorPagina;
+      const fin = inicio + config.rolesPorPagina;
+      const rolesPagina = todosRoles.slice(inicio, fin).join('\n');
+
+      const embed = new EmbedBuilder()
+        .setColor(0x2b2d31)
+        .setTitle('Roles')
+        .setDescription(rolesPagina)
+        .setFooter({ text: `Page ${pagina}/${totalPaginas}` });
+
+      const botones = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('anterior').setLabel('◀').setStyle(ButtonStyle.Primary).setDisabled(pagina === 1),
+        new ButtonBuilder().setCustomId('siguiente').setLabel('▶').setStyle(ButtonStyle.Primary).setDisabled(pagina === totalPaginas),
+        new ButtonBuilder().setCustomId('orden').setLabel('↕').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('cerrar').setLabel('✕').setStyle(ButtonStyle.Danger)
+      );
+
+      return { embeds: [embed], components: [botones] };
+    };
+
+    // Enviar primera página
+    const mensajeRoles = await mensaje.reply(generarPagina(paginaActual));
+
+    // Crear colector para los botones
+    const filtro = i => i.user.id === mensaje.author.id;
+    const colector = mensajeRoles.createMessageComponentCollector({ filter: filtro, time: 300000 });
+
+    colector.on('collect', async i => {
+      if (i.customId === 'anterior' && paginaActual > 1) paginaActual--;
+      if (i.customId === 'siguiente' && paginaActual < totalPaginas) paginaActual++;
+      if (i.customId === 'cerrar') {
+        await mensajeRoles.delete();
+        return;
+      }
+      await i.update(generarPagina(paginaActual));
+    });
+
+    return;
   }
 
   // Comando: ,an admin <ID>
@@ -190,7 +226,7 @@ client.on('messageCreate', async (mensaje) => {
       .setTitle(`${config.nombre} — Comandos`)
       .setDescription(`Prefijo: \`${config.prefix}\``)
       .addFields(
-        { name: 'Roles', value: '`,roles` — Mostrar lista de roles numerados' },
+        { name: 'Roles', value: '`,roles` — Mostrar lista de roles con paginación' },
         { name: 'Administración de Permisos', value: '`,an admin <ID>` — Permiso completo (sin límites)\n`,an wl <ID>` — Permiso limitado (1 categoría, 2 canales)' }
       );
     return mensaje.reply({ embeds: [embed] });
