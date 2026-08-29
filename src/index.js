@@ -20,7 +20,7 @@ const config = {
   }
 };
 
-// 🤖 CLIENTE DISCORD
+// 🤖 CLIENTE DISCORD — ✅ CORREGIDO, SIN INTENTS INVÁLIDOS
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -28,10 +28,9 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildModeration,
-    GatewayIntentBits.GuildChannels,
-    GatewayIntentBits.GuildRoles
+    GatewayIntentBits.GuildMessageReactions
   ],
-  partials: [Partials.Message, Partials.Channel, Partials.GuildMember]
+  partials: [Partials.Message, Partials.Channel, Partials.GuildMember, Partials.Reaction]
 });
 
 // 📝 REGISTRO
@@ -67,7 +66,7 @@ client.on('ready', () => {
   client.user.setActivity(',help | Protegiendo el servidor', { type: 3 });
 });
 
-// VIGILAR CREACIÓN DE CANALES
+// VIGILAR CREACIÓN DE CANALES Y CATEGORÍAS
 client.on('channelCreate', async (canal) => {
   if (!canal.guild) return;
   const audit = await canal.guild.fetchAuditLogs({ type: AuditLogEvent.ChannelCreate, limit: 1 }).catch(() => null);
@@ -138,10 +137,10 @@ client.on('messageCreate', async (mensaje) => {
   const cmd = args.shift()?.toLowerCase();
 
   // ========== COMANDO ,roles — MUESTRA TODOS LOS ROLES NUMERADOS ==========
-  if (cmd === 'roles' || cmd === 'rol') {
+  if (cmd === 'roles') {
     const roles = mensaje.guild.roles.cache
-      .filter(r => r.id !== mensaje.guild.id) // Quita el rol de @everyone
-      .sort((a, b) => b.position - a.position) // Ordena de arriba hacia abajo
+      .filter(r => r.id !== mensaje.guild.id)
+      .sort((a, b) => b.position - a.position)
       .map((rol, index) => `**${index + 1}.** ${rol.name} — <@&${rol.id}>`)
       .join('\n');
 
