@@ -1,9 +1,11 @@
 {
-  "name": "bledo",
+  "name": "bledo-bot",
   "version": "1.0.0",
+  "description": "Bot estilo Blitz — Protección y Moderación",
   "main": "src/index.js",
   "scripts": {
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "dev": "node src/index.js"
   },
   "dependencies": {
     "discord.js": "^14.16.0",
@@ -12,5 +14,7 @@
   },
   "engines": {
     "node": ">=18.0.0"
-  }
+  },
+  "author": "Bledo",
+  "license": "MIT"
 }
