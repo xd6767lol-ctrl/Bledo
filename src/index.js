@@ -4,7 +4,7 @@ const fs = require('fs');
 const http = require('http');
 const chalk = require('chalk');
 
-// ========== VALIDACIÓN DE ARCHIVOS ==========
+// 1. VERIFICACIÓN DE ARCHIVOS
 if (!fs.existsSync('./config.json')) {
     console.error(chalk.red('[ERROR] config.json no encontrado. Crea el archivo en la raíz del repositorio.'));
     process.exit(1);
@@ -15,10 +15,10 @@ if (!process.env.TOKEN) {
     process.exit(1);
 }
 
-// ========== CONFIGURACIÓN ==========
+// 2. CONFIGURACIÓN
 const config = JSON.parse(fs.readFileSync('./config.json', 'utf8'));
 
-// ========== CLIENTE DISCORD ==========
+// 3. CLIENTE DISCORD
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -31,7 +31,7 @@ const client = new Client({
     partials: [Partials.Message, Partials.Channel, Partials.Reaction]
 });
 
-// ========== LOGGER PROFESIONAL ==========
+// 4. LOGGER PROFESIONAL
 const logger = {
     info: (msg) => console.log(chalk.blue(`[INFO] ${msg}`)),
     warn: (msg) => console.log(chalk.yellow(`[WARN] ${msg}`)),
@@ -39,7 +39,7 @@ const logger = {
     success: (msg) => console.log(chalk.green(`[SUCCESS] ${msg}`))
 };
 
-// ========== SISTEMA ANTINUKE ==========
+// 5. SISTEMA ANTINUKE
 const antinuke = {
     kicks: new Map(),
     bans: new Map(),
@@ -85,7 +85,7 @@ const antinuke = {
     }
 };
 
-// ========== EVENTOS ==========
+// 6. EVENTOS DEL BOT
 client.on('ready', () => {
     logger.success(`Bot conectado como ${client.user.tag}`);
     client.user.setActivity('Bleed Bot | v5.2', { type: 'WATCHING' });
@@ -109,8 +109,54 @@ client.on('channelDelete', async (channel) => {
     }
 });
 
-// ========== ROLES POR REACCIONES ==========
+// 7. ROLES POR REACCIONES (CORREGIDO)
 client.on('messageReactionAdd', async (reaction, user) => {
     if (user.bot) return;
     if (reaction.partial) await reaction.fetch();
-    if (r
+    if (reaction.message.partial) await reaction.message.fetch();
+
+    if (reaction.message.id !== config.reactionRoles.messageId) return;
+    const roleId = config.reactionRoles.roles[reaction.emoji.name];
+    if (!roleId) return;
+
+    const member = reaction.message.guild.members.cache.get(user.id);
+    const role = reaction.message.guild.roles.cache.get(roleId);
+
+    if (member && role) {
+        await member.roles.add(role);
+        logger.info(`Role ${role.name} assigned to ${member.user.tag}`);
+    }
+});
+
+client.on('messageReactionRemove', async (reaction, user) => {
+    if (user.bot) return;
+    if (reaction.partial) await reaction.fetch();
+    if (reaction.message.partial) await reaction.message.fetch();
+
+    if (reaction.message.id !== config.reactionRoles.messageId) return;
+    const roleId = config.reactionRoles.roles[reaction.emoji.name];
+    if (!roleId) return;
+
+    const member = reaction.message.guild.members.cache.get(user.id);
+    const role = reaction.message.guild.roles.cache.get(roleId);
+
+    if (member && role) {
+        await member.roles.remove(role);
+        logger.info(`Role ${role.name} removed from ${member.user.tag}`);
+    }
+});
+
+// 8. SERVIDOR HTTP PARA RENDER
+const server = http.createServer((req, res) => {
+    res.writeHead(200).end('Bleed Bot is Running');
+});
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+    logger.info(`HTTP Server listening on port ${PORT}`);
+    // Iniciar conexión Discord
+    client.login(process.env.TOKEN).catch(err => {
+        logger.error(`Login Failed: ${err.message}`);
+        process.exit(1);
+    });
+});
