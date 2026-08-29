@@ -1,159 +1,71 @@
-require('dotenv').config();
-const { Client, GatewayIntentBits, Partials } = require('discord.js');
-const http = require('http');
-const chalk = require('chalk');
+const { Client, GatewayIntentBits, Events, PermissionsBitField, ChannelType, AuditLogEvent } = require('discord.js');
+const fs = require('fs');
+const express = require('express');
+const app = express();
+const PORT = process.env.PORT || 10000;
 
-// ========== CARGAR CONFIGURACIÓN (RENDER VARIABLES) ==========
-let config;
-if (!process.env.CONFIG_JSON) {
-    console.error(chalk.red('[ERROR] CONFIG_JSON no configurado. Ve a Render Dashboard y agrega una variable de entorno llamada "CONFIG_JSON".'));
-    process.exit(1);
-}
-try {
-    config = JSON.parse(process.env.CONFIG_JSON);
-} catch (e) {
-    console.error(chalk.red('[ERROR] El formato del JSON en CONFIG_JSON es inválido.'));
-    process.exit(1);
-}
+app.get('/', (req, res) => res.send('Online — Grid AntiNuke System'));
+app.listen(PORT, '0.0.0.0', () => console.log(`Running on port ${PORT}`));
 
-// ========== CLIENTE DISCORD ==========
+const CONFIG = {
+  token: process.env.DISCORD_TOKEN,
+  prefix: ',',
+  antinukeFile: './antinuke_data.json',
+  whitelistFile: './whitelist_data.json',
+  logChannel: 'seguridad',
+  actionWindow: 15000,
+  defaultThreshold: 3,
+  defaultPunishment: 'stripstaff'
+};
+
 const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMembers,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildBans,
-        GatewayIntentBits.GuildModeration
-    ],
-    partials: [Partials.Message, Partials.Channel, Partials.Reaction]
+  intents: [
+    GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildModeration, GatewayIntentBits.GuildWebhooks,
+    GatewayIntentBits.GuildEmojisAndStickers
+  ]
 });
 
-// ========== LOGGER ==========
-const logger = {
-    info: (msg) => console.log(chalk.blue(`[INFO] ${msg}`)),
-    warn: (msg) => console.log(chalk.yellow(`[WARN] ${msg}`)),
-    error: (msg) => console.log(chalk.red(`[ERROR] ${msg}`)),
-    success: (msg) => console.log(chalk.green(`[SUCCESS] ${msg}`))
-};
+let lastClearedMessages = [], deletedMessagesLog = [], lastClearedUserId = null;
 
-// ========== SISTEMA ANTINUKE ==========
-const antinuke = {
-    kicks: new Map(),
-    bans: new Map(),
-    channelDeletes: new Map(),
+class WhitelistManager {
+    constructor() { this.data = this.load(); }
+    load() {
+        try { if (fs.existsSync(CONFIG.whitelistFile)) return JSON.parse(fs.readFileSync(CONFIG.whitelistFile, 'utf8')); } catch (e) {}
+        return { all: [], pings: [] };
+    }
+    save() { fs.writeFileSync(CONFIG.whitelistFile, JSON.stringify(this.data, null, 4)); }
+    isAll(userId) { return this.data.all.includes(userId); }
+    isPings(userId) { return this.data.pings.includes(userId); }
+    canPingEveryone(userId) { return this.isAll(userId) || this.isPings(userId); }
+    addAll(userId) { if (!this.data.all.includes(userId)) { this.data.all.push(userId); this.data.pings = this.data.pings.filter(id => id !== userId); this.save(); } }
+    addPings(userId) { if (!this.data.pings.includes(userId) && !this.data.all.includes(userId)) { this.data.pings.push(userId); this.save(); } }
+    remove(userId) { this.data.all = this.data.all.filter(id => id !== userId); this.data.pings = this.data.pings.filter(id => id !== userId); this.save(); }
+}
+const whitelist = new WhitelistManager();
 
-    async punishOffenders(guild, action, client) {
-        const logChannel = client.channels.cache.get(process.env.LOG_CHANNEL);
-        if (!logChannel) return logger.error('Canal de logs no encontrado.');
-
-        for (const [memberId, member] of guild.members.cache) {
-            if (member.user.bot) continue;
-            if (member.roles.cache.some(role => config.antinuke.whitelistedRoles.includes(role.id))) continue;
-
-            try {
-                if (action === 'kick') await member.kick({ reason: 'AntiNuke: Exceso de kicks' });
-                if (action === 'ban') await member.ban({ reason: 'AntiNuke: Exceso de bans' });
-                if (action === 'channel') await member.ban({ reason: 'AntiNuke: Exceso de eliminaciones de canales' });
-            } catch (err) {
-                logger.error(`Error al sancionar a ${member.user.tag}: ${err.message}`);
+class AntiNukeManager {
+    constructor() { this.data = this.load(); this.actionTracker = {}; }
+    load() {
+        try { if (fs.existsSync(CONFIG.antinukeFile)) return JSON.parse(fs.readFileSync(CONFIG.antinukeFile, 'utf8')); } catch (e) {}
+        return {
+            enabled: false,
+            admins: [],
+            whitelist: [],
+            modules: {
+                ban: { enabled: false, threshold: 3, punishment: 'stripstaff' },
+                kick: { enabled: false, threshold: 3, punishment: 'stripstaff' },
+                channelCreate: { enabled: false, threshold: 3, punishment: 'stripstaff' },
+                channelDelete: { enabled: false, threshold: 3, punishment: 'stripstaff' },
+                roleCreate: { enabled: false, threshold: 3, punishment: 'stripstaff' },
+                roleDelete: { enabled: false, threshold: 3, punishment: 'stripstaff' },
+                webhookCreate: { enabled: false, threshold: 1, punishment: 'ban' },
+                emojiDelete: { enabled: false, threshold: 3, punishment: 'stripstaff' },
+                vanity: { enabled: false, punishment: 'ban' },
+                botAdd: { enabled: false, threshold: 1, punishment: 'kick' }
             }
-        }
-        await logChannel.send(`[SYSTEM] AntiNuke activado en ${guild.name} por ${action} excesivo.`);
-    },
-
-    checkLimits(guild, type) {
-        const now = Date.now();
-        const cooldown = 60000;
-
-        if (!this[type].has(guild.id)) {
-            this[type].set(guild.id, { count: 0, lastReset: now });
-        }
-
-        const data = this[type].get(guild.id);
-        if (now - data.lastReset > cooldown) {
-            data.count = 0;
-            data.lastReset = now;
-        }
-
-        data.count++;
-        this[type].set(guild.id, data);
-
-        return data.count > config.antinuke[`max${type.charAt(0).toUpperCase() + type.slice(1)}PerMinute`];
+        };
     }
-};
-
-// ========== EVENTOS ==========
-client.on('ready', () => {
-    logger.success(`Bot conectado como ${client.user.tag}`);
-    client.user.setActivity('Bleed Bot | v5.2', { type: 'WATCHING' });
-});
-
-client.on('guildMemberRemove', async (member) => {
-    if (antinuke.checkLimits(member.guild, 'kicks')) {
-        await antinuke.punishOffenders(member.guild, 'kick', client);
-    }
-});
-
-client.on('guildBanAdd', async (ban) => {
-    if (antinuke.checkLimits(ban.guild, 'bans')) {
-        await antinuke.punishOffenders(ban.guild, 'ban', client);
-    }
-});
-
-client.on('channelDelete', async (channel) => {
-    if (antinuke.checkLimits(channel.guild, 'channelDeletes')) {
-        await antinuke.punishOffenders(channel.guild, 'channel', client);
-    }
-});
-
-// ========== ROLES POR REACCIONES ==========
-client.on('messageReactionAdd', async (reaction, user) => {
-    if (user.bot) return;
-    if (reaction.partial) await reaction.fetch();
-    if (reaction.message.partial) await reaction.message.fetch();
-
-    if (reaction.message.id !== config.reactionRoles.messageId) return;
-    const roleId = config.reactionRoles.roles[reaction.emoji.name];
-    if (!roleId) return;
-
-    const member = reaction.message.guild.members.cache.get(user.id);
-    const role = reaction.message.guild.roles.cache.get(roleId);
-
-    if (member && role) {
-        await member.roles.add(role);
-        logger.info(`Role ${role.name} assigned to ${member.user.tag}`);
-    }
-});
-
-client.on('messageReactionRemove', async (reaction, user) => {
-    if (user.bot) return;
-    if (reaction.partial) await reaction.fetch();
-    if (reaction.message.partial) await reaction.message.fetch();
-
-    if (reaction.message.id !== config.reactionRoles.messageId) return;
-    const roleId = config.reactionRoles.roles[reaction.emoji.name];
-    if (!roleId) return;
-
-    const member = reaction.message.guild.members.cache.get(user.id);
-    const role = reaction.message.guild.roles.cache.get(roleId);
-
-    if (member && role) {
-        await member.roles.remove(role);
-        logger.info(`Role ${role.name} removed from ${member.user.tag}`);
-    }
-});
-
-// ========== SERVIDOR HTTP ==========
-const server = http.createServer((req, res) => {
-    res.writeHead(200).end('Bleed Bot is Running');
-});
-
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-    logger.info(`HTTP Server listening on port ${PORT}`);
-    client.login(process.env.TOKEN).catch(err => {
-        logger.error(`Login Failed: ${err.message}`);
-        process.exit(1);
-    });
-});
+    save() { fs.writeFileSync(CONFIG.antinukeFile, JSON.stringify(this.data, null, 4)); }
+    isAdmin(userId) { return this.data.admins...
