@@ -1,24 +1,22 @@
 require('dotenv').config();
 const { Client, GatewayIntentBits, Partials } = require('discord.js');
-const fs = require('fs');
 const http = require('http');
 const chalk = require('chalk');
 
-// 1. VERIFICACIÓN DE ARCHIVOS
-if (!fs.existsSync('./config.json')) {
-    console.error(chalk.red('[ERROR] config.json no encontrado. Crea el archivo en la raíz del repositorio.'));
+// ========== CARGAR CONFIGURACIÓN (RENDER VARIABLES) ==========
+let config;
+if (!process.env.CONFIG_JSON) {
+    console.error(chalk.red('[ERROR] CONFIG_JSON no configurado. Ve a Render Dashboard y agrega una variable de entorno llamada "CONFIG_JSON".'));
+    process.exit(1);
+}
+try {
+    config = JSON.parse(process.env.CONFIG_JSON);
+} catch (e) {
+    console.error(chalk.red('[ERROR] El formato del JSON en CONFIG_JSON es inválido.'));
     process.exit(1);
 }
 
-if (!process.env.TOKEN) {
-    console.error(chalk.red('[ERROR] TOKEN no configurado en .env.'));
-    process.exit(1);
-}
-
-// 2. CONFIGURACIÓN
-const config = JSON.parse(fs.readFileSync('./config.json', 'utf8'));
-
-// 3. CLIENTE DISCORD
+// ========== CLIENTE DISCORD ==========
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -31,7 +29,7 @@ const client = new Client({
     partials: [Partials.Message, Partials.Channel, Partials.Reaction]
 });
 
-// 4. LOGGER PROFESIONAL
+// ========== LOGGER ==========
 const logger = {
     info: (msg) => console.log(chalk.blue(`[INFO] ${msg}`)),
     warn: (msg) => console.log(chalk.yellow(`[WARN] ${msg}`)),
@@ -39,7 +37,7 @@ const logger = {
     success: (msg) => console.log(chalk.green(`[SUCCESS] ${msg}`))
 };
 
-// 5. SISTEMA ANTINUKE
+// ========== SISTEMA ANTINUKE ==========
 const antinuke = {
     kicks: new Map(),
     bans: new Map(),
@@ -66,7 +64,7 @@ const antinuke = {
 
     checkLimits(guild, type) {
         const now = Date.now();
-        const cooldown = 60000; // 1 minuto
+        const cooldown = 60000;
 
         if (!this[type].has(guild.id)) {
             this[type].set(guild.id, { count: 0, lastReset: now });
@@ -85,7 +83,7 @@ const antinuke = {
     }
 };
 
-// 6. EVENTOS DEL BOT
+// ========== EVENTOS ==========
 client.on('ready', () => {
     logger.success(`Bot conectado como ${client.user.tag}`);
     client.user.setActivity('Bleed Bot | v5.2', { type: 'WATCHING' });
@@ -109,7 +107,7 @@ client.on('channelDelete', async (channel) => {
     }
 });
 
-// 7. ROLES POR REACCIONES (CORREGIDO)
+// ========== ROLES POR REACCIONES ==========
 client.on('messageReactionAdd', async (reaction, user) => {
     if (user.bot) return;
     if (reaction.partial) await reaction.fetch();
@@ -146,7 +144,7 @@ client.on('messageReactionRemove', async (reaction, user) => {
     }
 });
 
-// 8. SERVIDOR HTTP PARA RENDER
+// ========== SERVIDOR HTTP ==========
 const server = http.createServer((req, res) => {
     res.writeHead(200).end('Bleed Bot is Running');
 });
@@ -154,7 +152,6 @@ const server = http.createServer((req, res) => {
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
     logger.info(`HTTP Server listening on port ${PORT}`);
-    // Iniciar conexión Discord
     client.login(process.env.TOKEN).catch(err => {
         logger.error(`Login Failed: ${err.message}`);
         process.exit(1);
