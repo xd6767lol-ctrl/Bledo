@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits, Partials, PermissionFlagsBits, AuditLogEvent, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, PermissionFlagsBits, AuditLogEvent, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, UserSelectMenuBuilder } = require('discord.js');
 const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -21,6 +21,9 @@ const config = {
   rolesPorPagina: 10
 };
 
+// 📦 ALMACENAMIENTO DE CANALES DE VOZ
+const canalesVoz = new Map(); // canalId -> { propietarioId, canalPanelId }
+
 // 🤖 CLIENTE DISCORD
 const client = new Client({
   intents: [
@@ -29,7 +32,8 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildModeration,
-    GatewayIntentBits.GuildMessageReactions
+    GatewayIntentBits.GuildMessageReactions,
+    GatewayIntentBits.GuildVoiceStates
   ],
   partials: [Partials.Message, Partials.Channel, Partials.GuildMember, Partials.Reaction]
 });
@@ -41,12 +45,12 @@ const log = {
   error: m => console.log(`[ERROR] ${m}`)
 };
 
-// 🛡️ SISTEMA DE WHITELIST Y PERMISOS — EXACTO COMO LO PEDISTE
+// 🛡️ SISTEMA DE WHITELIST Y PERMISOS
 const sistema = {
-  admins: new Set(),      // ,an admin → TODO sin límite
-  whitelist: new Set(),   // ,an wl → 1 categoría + 2 canales máximo
-  whitelistPings: new Set(), // ,whitelist add <ID> pings → solo puede @everyone
-  whitelistAll: new Set(),   // ,whitelist add <ID> all → todo sin límite
+  admins: new Set(),
+  whitelist: new Set(),
+  whitelistPings: new Set(),
+  whitelistAll: new Set(),
   contadores: new Map(),
 
   nivelPermiso(usuarioId, servidorId) {
@@ -71,21 +75,180 @@ client.on('ready', () => {
   client.user.setActivity(',help | Protegiendo el servidor', { type: 3 });
 });
 
-// 🚨 VIGILAR @everyone / @here — SÓLO SI TIENEN whitelist pings o all
+// 🎙️ SISTEMA JOIN TO CREATE — CUANDO ALGUIEN ENTRE AL PANEL
+client.on('voiceStateUpdate', async (estadoAntiguo, estadoNuevo) => {
+  const usuario = estadoNuevo.member.user;
+  const canalEntrada = estadoNuevo.channel;
+  const canalSalida = estadoAntiguo.channel;
+
+  // Si se desconectó de un canal personal → borrarlo
+  if (canalSalida && canalesVoz.has(canalSalida.id)) {
+    const datos = canalesVoz.get(canalSalida.id);
+    if (estadoAntiguo.channel.members.size === 0) {
+      await canalSalida.delete().catch(() => null);
+      canalesVoz.delete(canalSalida.id);
+      log.info(`Canal de voz de ${datos.propietarioNombre} eliminado — vacío`);
+    }
+  }
+
+  // Si no entró a ningún canal → ignorar
+  if (!canalEntrada) return;
+
+  // Si el canal se llama "panel" → crear canal personal
+  if (canalEntrada.name.toLowerCase() === 'panel') {
+    // Evitar crear canales duplicados si ya tiene uno
+    const canalExistente = Array.from(canalesVoz.entries()).find(([id, d]) => d.propietarioId === usuario.id);
+    if (canalExistente) {
+      await estadoNuevo.setChannel(canalExistente[0]).catch(() => null);
+      return;
+    }
+
+    // Crear canal de voz personal
+    const canalPersonal = await canalEntrada.guild.channels.create({
+      name: usuario.username,
+      type: ChannelType.GuildVoice,
+      parent: canalEntrada.parent,
+      permissionOverwrites: [
+        {
+          id: usuario.id,
+          allow: [
+            PermissionFlagsBits.ManageChannels,
+            PermissionFlagsBits.Connect,
+            PermissionFlagsBits.Speak
+          ]
+        }
+      ]
+    });
+
+    // Guardar datos del canal
+    canalesVoz.set(canalPersonal.id, {
+      propietarioId: usuario.id,
+      propietarioNombre: usuario.username,
+      canalPanelId: canalEntrada.id
+    });
+
+    // Mover al usuario a su nuevo canal
+    await estadoNuevo.setChannel(canalPersonal).catch(() => null);
+
+    // Enviar mensaje de control con TODOS los botones (igual a la imagen)
+    const embedControl = new EmbedBuilder()
+      .setColor(0x2b2d31)
+      .setTitle('VoiceMaster Interface')
+      .setDescription('Use the buttons below to control your voice channel.\n\n' +
+        '**Button Usage**\n' +
+        '🔒 — Lock the voice channel\n' +
+        '🔓 — Unlock the voice channel\n' +
+        '👁️‍🗨️ — Ghost the voice channel\n' +
+        '👁️ — Reveal the voice channel\n' +
+        '🎙️ — Claim the voice channel\n' +
+        '🔌 — Disconnect a member\n' +
+        '🎮 — Start an activity\n' +
+        'ℹ️ — View channel information\n' +
+        '➕ — Increase the user limit\n' +
+        '➖ — Decrease the user limit');
+
+    const fila1 = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('vc_lock').setEmoji('🔒').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('vc_unlock').setEmoji('🔓').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('vc_ghost').setEmoji('👁️‍🗨️').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('vc_reveal').setEmoji('👁️').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('vc_claim').setEmoji('🎙️').setStyle(ButtonStyle.Secondary)
+    );
+
+    const fila2 = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('vc_disconnect').setEmoji('🔌').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('vc_activity').setEmoji('🎮').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('vc_info').setEmoji('ℹ️').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('vc_plus').setEmoji('➕').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('vc_minus').setEmoji('➖').setStyle(ButtonStyle.Secondary)
+    );
+
+    // Enviar mensaje al canal de voz
+    await canalPersonal.send({ embeds: [embedControl], components: [fila1, fila2] }).catch(() => null);
+    log.info(`Canal de voz creado para ${usuario.username}`);
+  }
+});
+
+// 🎛️ MANEJAR LOS BOTONES DEL VOICE MASTER
+client.on('interactionCreate', async (interaccion) => {
+  if (!interaccion.isButton()) return;
+  const canal = interaccion.channel;
+  if (!canalesVoz.has(canal.id)) return;
+
+  const datos = canalesVoz.get(canal.id);
+  const propietarioId = datos.propietarioId;
+  const usuarioId = interaccion.user.id;
+
+  // Verificar si es el dueño o admin
+  const esDueno = usuarioId === propietarioId;
+  const esAdmin = sistema.nivelPermiso(usuarioId, interaccion.guild.id) === 'admin' || 
+                  interaccion.member.permissions.has(PermissionFlagsBits.ManageChannels);
+
+  if (!esDueno && !esAdmin) {
+    return interaccion.reply({ content: '❌ No eres el dueño de este canal', ephemeral: true });
+  }
+
+  // Ejecutar la acción del botón
+  switch (interaccion.customId) {
+    case 'vc_lock':
+      await canal.permissionOverwrites.edit(interaccion.guild.id, { Connect: false });
+      await interaccion.reply({ content: '🔒 Canal bloqueado', ephemeral: true });
+      break;
+    case 'vc_unlock':
+      await canal.permissionOverwrites.edit(interaccion.guild.id, { Connect: true });
+      await interaccion.reply({ content: '🔓 Canal desbloqueado', ephemeral: true });
+      break;
+    case 'vc_ghost':
+      await canal.permissionOverwrites.edit(interaccion.guild.id, { ViewChannel: false });
+      await interaccion.reply({ content: '👁️‍🗨️ Canal oculto', ephemeral: true });
+      break;
+    case 'vc_reveal':
+      await canal.permissionOverwrites.edit(interaccion.guild.id, { ViewChannel: true });
+      await interaccion.reply({ content: '👁️ Canal visible', ephemeral: true });
+      break;
+    case 'vc_claim':
+      datos.propietarioId = usuarioId;
+      canalesVoz.set(canal.id, datos);
+      await canal.permissionOverwrites.edit(usuarioId, { ManageChannels: true, Connect: true });
+      await interaccion.reply({ content: `🎙️ Ahora eres el dueño del canal`, ephemeral: true });
+      break;
+    case 'vc_plus':
+      await canal.setUserLimit(Math.min(canal.userLimit + 1, 99)).catch(() => null);
+      await interaccion.reply({ content: `➕ Límite: ${canal.userLimit + 1}`, ephemeral: true });
+      break;
+    case 'vc_minus':
+      await canal.setUserLimit(Math.max(canal.userLimit - 1, 0)).catch(() => null);
+      await interaccion.reply({ content: `➖ Límite: ${Math.max(canal.userLimit - 1, 0)}`, ephemeral: true });
+      break;
+    case 'vc_info':
+      await interaccion.reply({
+        content: `ℹ️ **Información del canal**\nNombre: ${canal.name}\nDueño: <@${propietarioId}>\nID: ${canal.id}\nMiembros: ${canal.members.size}`,
+        ephemeral: true
+      });
+      break;
+    case 'vc_disconnect':
+      await interaccion.reply({ content: '🔌 Selecciona a quién desconectar (próximamente)', ephemeral: true });
+      break;
+    case 'vc_activity':
+      await interaccion.reply({ content: '🎮 Actividades próximamente', ephemeral: true });
+      break;
+  }
+});
+
+// 🚨 VIGILAR @everyone / @here
 client.on('messageCreate', async (mensaje) => {
   if (mensaje.author.bot || !mensaje.guild) return;
   
   const nivel = sistema.nivelPermiso(mensaje.author.id, mensaje.guild.id);
   
-  // Si menciona @everyone o @here y NO tiene permiso → borrar el mensaje
   if ((mensaje.mentions.everyone) && nivel !== 'all' && nivel !== 'pings' && nivel !== 'dueno') {
     await mensaje.delete().catch(() => null);
-    log.info(`${mensaje.author.tag} intentó mencionar everyone sin permiso — mensaje borrado`);
+    log.info(`${mensaje.author.tag} intentó mencionar everyone sin permiso`);
     return;
   }
 });
 
-// VIGILAR CREACIÓN DE CANALES Y CATEGORÍAS
+// VIGILAR CREACIÓN DE CANALES
 client.on('channelCreate', async (canal) => {
   if (!canal.guild) return;
   const audit = await canal.guild.fetchAuditLogs({ type: AuditLogEvent.ChannelCreate, limit: 1 }).catch(() => null);
@@ -155,6 +318,26 @@ client.on('messageCreate', async (mensaje) => {
   const args = mensaje.content.slice(config.prefix.length).trim().split(/ +/);
   const cmd = args.shift()?.toLowerCase();
 
+  // ========== COMANDO ,vc master — CREAR CANAL PANEL ==========
+  if (cmd === 'vc' && args[0]?.toLowerCase() === 'master') {
+    if (!mensaje.member.permissions.has(PermissionFlagsBits.ManageChannels))
+      return mensaje.reply('Permisos insuficientes — Necesitas gestionar canales');
+
+    // Verificar si ya existe un canal "panel"
+    const panelExistente = mensaje.guild.channels.cache.find(c => c.name.toLowerCase() === 'panel' && c.type === ChannelType.GuildVoice);
+    if (panelExistente)
+      return mensaje.reply(`⚠️ Ya existe un canal llamado "panel": <#${panelExistente.id}>`);
+
+    // Crear el canal panel
+    const canalPanel = await mensaje.guild.channels.create({
+      name: 'panel',
+      type: ChannelType.GuildVoice,
+      reason: 'VoiceMaster — Canal de creación automática'
+    });
+
+    return mensaje.reply(`✅ Canal **panel** creado exitosamente\n<#${canalPanel.id}>\nCuando alguien se una, se creará su canal automáticamente`);
+  }
+
   // ========== COMANDO ,roles — ESTILO EXACTO DE LA FOTO ==========
   if (cmd === 'roles') {
     const todosRoles = mensaje.guild.roles.cache
@@ -203,9 +386,7 @@ client.on('messageCreate', async (mensaje) => {
     return;
   }
 
-  // ========== SISTEMA DE WHITELIST COMPLETO ==========
-  // ,whitelist add <ID> all → todo sin límite
-  // ,whitelist add <ID> pings → solo @everyone
+  // ========== SISTEMA DE WHITELIST ==========
   if (cmd === 'whitelist') {
     if (!mensaje.member.permissions.has(PermissionFlagsBits.Administrator))
       return mensaje.reply('Permisos insuficientes — Solo Administradores');
@@ -216,7 +397,6 @@ client.on('messageCreate', async (mensaje) => {
 
     if (accion === 'add' && idUsuario && tipo) {
       const clave = `${idUsuario}-${mensaje.guild.id}`;
-      // Quitar de todos primero
       sistema.whitelistAll.delete(clave);
       sistema.whitelist.delete(clave);
       sistema.whitelistPings.delete(clave);
@@ -241,7 +421,6 @@ client.on('messageCreate', async (mensaje) => {
       return mensaje.reply(`✅ <@${idUsuario}> eliminado de la whitelist`);
     }
 
-    // Ver lista
     const listaAll = Array.from(sistema.whitelistAll).map(c => `<@${c.split('-')[0]}> — all`).join('\n') || 'Vacía';
     const listaPings = Array.from(sistema.whitelistPings).map(c => `<@${c.split('-')[0]}> — pings`).join('\n') || 'Vacía';
     const listaWL = Array.from(sistema.whitelist).map(c => `<@${c.split('-')[0]}> — wl`).join('\n') || 'Vacía';
@@ -291,9 +470,10 @@ client.on('messageCreate', async (mensaje) => {
       .setTitle(`${config.nombre} — Comandos`)
       .setDescription(`Prefijo: \`${config.prefix}\``)
       .addFields(
+        { name: 'VoiceMaster', value: '`,vc master` — Crear canal "panel" para canales automáticos' },
         { name: 'Roles', value: '`,roles` — Mostrar lista de roles con paginación' },
-        { name: 'Whitelist', value: '`,whitelist add <ID> all` — Todo sin límite\n`,whitelist add <ID> pings` — Solo @everyone\n`,whitelist remove <ID>` — Quitar de whitelist\n`,whitelist` — Ver lista completa' },
-        { name: 'AntiNuke', value: '`,an admin <ID>` — Permiso completo\n`,an wl <ID>` — Permiso limitado (1 categoría, 2 canales)' }
+        { name: 'Whitelist', value: '`,whitelist add <ID> all` — Todo sin límite\n`,whitelist add <ID> pings` — Solo @everyone\n`,whitelist remove <ID>` — Quitar de whitelist' },
+        { name: 'AntiNuke', value: '`,an admin <ID>` — Permiso completo\n`,an wl <ID>` — Permiso limitado' }
       );
     return mensaje.reply({ embeds: [embed] });
   }
@@ -301,5 +481,5 @@ client.on('messageCreate', async (mensaje) => {
 
 // 🔑 INICIAR BOT
 client.login(process.env.TOKEN)
-  .then(() => log.listo('Bot iniciado correctamente — Sistema de whitelist activo'))
+  .then(() => log.listo('Bot iniciado correctamente — Sistema VoiceMaster + Whitelist Activo'))
   .catch(err => log.error(`Error de inicio: ${err.message}`));
