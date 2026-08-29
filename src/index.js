@@ -8,14 +8,13 @@ const PORT = process.env.PORT || 10000;
 app.get('/', (req, res) => res.send('System Online'));
 app.listen(PORT, '0.0.0.0', () => console.log(`Port ${PORT} — Service Running`));
 
-// ⚙️ CONFIGURACIÓN COMPLETA
+// ⚙️ CONFIGURACIÓN — SIN ID DE DUEÑO, SE DETECTA SOLO
 const config = {
   prefix: ',',
   nombre: 'Willy Santino',
-  ownerId: 'PON_AQUI_TU_ID_DE_DISCORD',
   limites: { wl: { categoriasMax: 1, canalesMax: 2 } },
   rolesPorPagina: 10,
-  // 🛡️ ANTINUKE ESTILO BLEED
+  // 🛡️ ANTINUKE — SOLO DUEÑO PUEDE CONFIGURAR
   antinuke: {
     enabled: true,
     protection: {
@@ -48,22 +47,19 @@ const sistema = {
   antinukeAdmins: new Set(),
   contadores: new Map(),
 
-  isOwner(userId) { return userId === config.ownerId; },
+  // ✅ DETECTA AUTOMÁTICAMENTE AL DUEÑO DEL SERVIDOR
+  isOwner(userId, guild) {
+    return userId === guild.ownerId;
+  },
   isWhitelisted(userId, guildId) {
     const clave = `${userId}-${guildId}`;
-    return this.isOwner(userId) || this.whitelistAll.has(clave) || this.antinukeAdmins.has(clave);
+    return this.whitelistAll.has(clave) || this.antinukeAdmins.has(clave);
   },
   isAntinukeAdmin(userId) {
-    return this.isOwner(userId) || this.antinukeAdmins.has(userId);
+    return this.antinukeAdmins.has(userId);
   },
 
   nivelPermiso(usuarioId, servidorId) {
-    if (this.isOwner(usuarioId)) return 'dueno';
-    if (this.whitelistAll.has(`${usuarioId}-${servidorId}`)) return 'all';
-    if (this.antinukeAdmins.has(`${usuarioId}-${servidorId}`)) return 'antinuke_admin';
-    if (this.admins.has(`${usuarioId}-${servidorId}`)) return 'admin';
-    if (this.whitelist.has(`${usuarioId}-${servidorId}`)) return 'wl';
-    if (this.whitelistPings.has(`${usuarioId}-${servidorId}`)) return 'pings';
     return 'ninguno';
   },
 
@@ -105,7 +101,7 @@ function trackAction(userId, action, limit) {
 async function punish(guild, user, reason) {
   const member = await guild.members.fetch(user.id).catch(() => null);
   if (!member) return;
-  if (sistema.isWhitelisted(user.id, guild.id)) return;
+  if (user.id === guild.ownerId) return; // No castigar al dueño
 
   if (config.antinuke.punishment === 'remove_roles') {
     const roles = member.roles.cache.filter(r => r.id !== guild.id);
@@ -127,7 +123,8 @@ client.on('guildBanAdd', async ban => {
   if (!config.antinuke.enabled) return;
   const audit = await ban.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.MemberBanAdd }).catch(() => null);
   const executor = audit?.entries.first()?.executor;
-  if (!executor || executor.bot || sistema.isWhitelisted(executor.id, ban.guild.id)) return;
+  if (!executor || executor.bot) return;
+  if (executor.id === ban.guild.ownerId || sistema.isWhitelisted(executor.id, ban.guild.id)) return;
   const exceeded = trackAction(executor.id, 'bans', config.antinuke.limits.bansPerMinute);
   if (exceeded) await punish(ban.guild, executor, 'Exceeded ban limit');
 });
@@ -139,7 +136,8 @@ client.on('guildMemberRemove', async member => {
   const entry = audit?.entries.first();
   if (!entry || entry.target.id !== member.id) return;
   const executor = entry.executor;
-  if (!executor || sistema.isWhitelisted(executor.id, member.guild.id)) return;
+  if (!executor || executor.bot) return;
+  if (executor.id === member.guild.ownerId || sistema.isWhitelisted(executor.id, member.guild.id)) return;
   const exceeded = trackAction(executor.id, 'kicks', config.antinuke.limits.kicksPerMinute);
   if (exceeded) await punish(member.guild, executor, 'Exceeded kick limit');
 });
@@ -150,6 +148,7 @@ client.on('channelCreate', async channel => {
   const audit = await channel.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.ChannelCreate }).catch(() => null);
   const executor = audit?.entries.first()?.executor;
   if (!executor || sistema.isWhitelisted(executor.id, channel.guild.id)) return;
+  if (executor.id === channel.guild.ownerId) return;
   const exceeded = trackAction(executor.id, 'channels', config.antinuke.limits.channelsPerMinute);
   if (exceeded) {
     await punish(channel.guild, executor, 'Exceeded channel creation limit');
@@ -162,6 +161,7 @@ client.on('channelDelete', async channel => {
   const audit = await channel.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.ChannelDelete }).catch(() => null);
   const executor = audit?.entries.first()?.executor;
   if (!executor || sistema.isWhitelisted(executor.id, channel.guild.id)) return;
+  if (executor.id === channel.guild.ownerId) return;
   const exceeded = trackAction(executor.id, 'channels', config.antinuke.limits.channelsPerMinute);
   if (exceeded) await punish(channel.guild, executor, 'Exceeded channel delete limit');
 });
@@ -172,6 +172,7 @@ client.on('roleCreate', async role => {
   const audit = await role.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.RoleCreate }).catch(() => null);
   const executor = audit?.entries.first()?.executor;
   if (!executor || sistema.isWhitelisted(executor.id, role.guild.id)) return;
+  if (executor.id === role.guild.ownerId) return;
   const exceeded = trackAction(executor.id, 'roles', config.antinuke.limits.rolesPerMinute);
   if (exceeded) {
     await punish(role.guild, executor, 'Exceeded role creation limit');
@@ -184,6 +185,7 @@ client.on('roleDelete', async role => {
   const audit = await role.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.RoleDelete }).catch(() => null);
   const executor = audit?.entries.first()?.executor;
   if (!executor || sistema.isWhitelisted(executor.id, role.guild.id)) return;
+  if (executor.id === role.guild.ownerId) return;
   const exceeded = trackAction(executor.id, 'roles', config.antinuke.limits.rolesPerMinute);
   if (exceeded) await punish(role.guild, executor, 'Exceeded role delete limit');
 });
@@ -194,6 +196,7 @@ client.on('guildUpdate', async (oldGuild, newGuild) => {
   const audit = await newGuild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.GuildUpdate }).catch(() => null);
   const executor = audit?.entries.first()?.executor;
   if (!executor || sistema.isWhitelisted(executor.id, newGuild.id)) return;
+  if (executor.id === newGuild.ownerId) return;
 
   if (oldGuild.name !== newGuild.name && config.antinuke.protection.serverName) {
     await newGuild.setName(oldGuild.name).catch(() => null);
@@ -235,15 +238,6 @@ client.on('voiceStateUpdate', async (estadoAntiguo, estadoNuevo) => {
   }
 });
 
-// 🚨 PROTECCIÓN @everyone
-client.on('messageCreate', async mensaje => {
-  if (mensaje.author.bot || !mensaje.guild) return;
-  const nivel = sistema.nivelPermiso(mensaje.author.id, mensaje.guild.id);
-  if (mensaje.mentions.everyone && !['dueno','all','pings'].includes(nivel)) {
-    await mensaje.delete().catch(() => null);
-  }
-});
-
 // ⌨️ COMANDOS
 client.on('messageCreate', async mensaje => {
   if (mensaje.author.bot || !mensaje.guild) return;
@@ -251,12 +245,13 @@ client.on('messageCreate', async mensaje => {
   const args = mensaje.content.slice(config.prefix.length).trim().split(/ +/);
   const cmd = args.shift()?.toLowerCase();
 
-  // ========== ANTINUKE CONFIG — ,an config / ,antinuke config ==========
+  // ========== ANTINUKE CONFIG — SOLO EL DUEÑO DEL SERVIDOR 👑 ==========
   if ((cmd === 'an' || cmd === 'antinuke') && args[0]?.toLowerCase() === 'config') {
-    if (!sistema.isOwner(mensaje.author.id)) {
+    // ✅ SOLO EL DUEÑO DEL SERVIDOR PUEDE VER Y CONFIGURAR
+    if (mensaje.author.id !== mensaje.guild.ownerId) {
       return mensaje.reply({ embeds: [createEmbed('Access Denied', 'Only the server owner can configure antinuke.', '#ED4245')] });
     }
-    const embed = createEmbed('Antinuke Configuration', 'Use the commands below to configure protection.')
+    const embed = createEmbed('Antinuke Configuration', 'Only the server owner can modify these settings.')
       .addFields(
         { name: 'Status', value: config.antinuke.enabled ? 'Enabled' : 'Disabled', inline: true },
         { name: 'Bans', value: config.antinuke.protection.bans ? 'Enabled' : 'Disabled', inline: true },
@@ -269,16 +264,20 @@ client.on('messageCreate', async mensaje => {
     return mensaje.reply({ embeds: [embed] });
   }
 
-  // ,an enable / ,antinuke enable
+  // ,an enable — SOLO DUEÑO
   if ((cmd === 'an' || cmd === 'antinuke') && args[0]?.toLowerCase() === 'enable') {
-    if (!sistema.isOwner(mensaje.author.id)) return mensaje.reply({ embeds: [createEmbed('Access Denied', 'Only the owner can modify this setting.', '#ED4245')] });
+    if (mensaje.author.id !== mensaje.guild.ownerId) {
+      return mensaje.reply({ embeds: [createEmbed('Access Denied', 'Only the server owner can modify this setting.', '#ED4245')] });
+    }
     config.antinuke.enabled = !config.antinuke.enabled;
     return mensaje.reply({ embeds: [createEmbed('Antinuke Updated', `Antinuke protection has been ${config.antinuke.enabled ? '**enabled**' : '**disabled**'}.`, '#57F287')] });
   }
 
-  // ,an wl add / remove
+  // ,an wl add / remove — SOLO DUEÑO
   if ((cmd === 'an' || cmd === 'antinuke') && args[0]?.toLowerCase() === 'wl') {
-    if (!sistema.isAntinukeAdmin(mensaje.author.id)) return mensaje.reply({ embeds: [createEmbed('Access Denied', 'Insufficient permissions.', '#ED4245')] });
+    if (mensaje.author.id !== mensaje.guild.ownerId) {
+      return mensaje.reply({ embeds: [createEmbed('Access Denied', 'Only the server owner can manage whitelist.', '#ED4245')] });
+    }
     const accion = args[1]?.toLowerCase();
     const userId = args[2]?.replace(/[<@!>]/g, '');
     if (!userId) return mensaje.reply({ embeds: [createEmbed('Error', 'Please provide a valid user ID.', '#ED4245')] });
@@ -294,9 +293,11 @@ client.on('messageCreate', async mensaje => {
     }
   }
 
-  // ,an admin add / remove
+  // ,an admin add / remove — SOLO DUEÑO
   if ((cmd === 'an' || cmd === 'antinuke') && args[0]?.toLowerCase() === 'admin') {
-    if (!sistema.isOwner(mensaje.author.id)) return mensaje.reply({ embeds: [createEmbed('Access Denied', 'Only the owner can manage antinuke admins.', '#ED4245')] });
+    if (mensaje.author.id !== mensaje.guild.ownerId) {
+      return mensaje.reply({ embeds: [createEmbed('Access Denied', 'Only the server owner can manage antinuke admins.', '#ED4245')] });
+    }
     const accion = args[1]?.toLowerCase();
     const userId = args[2]?.replace(/[<@!>]/g, '');
     if (!userId) return mensaje.reply({ embeds: [createEmbed('Error', 'Please provide a valid user ID.', '#ED4245')] });
@@ -314,14 +315,14 @@ client.on('messageCreate', async mensaje => {
   // ========== VOICEMASTER ==========
   if (cmd === 'vc' && args[0]?.toLowerCase() === 'master') {
     if (!mensaje.member.permissions.has(PermissionFlagsBits.ManageChannels))
-      return mensaje.reply('Permisos insuficientes — Necesitas gestionar canales');
+      return mensaje.reply('Insufficient permissions');
     const panelExistente = mensaje.guild.channels.cache.find(c => c.name.toLowerCase() === 'panel' && c.type === ChannelType.GuildVoice);
-    if (panelExistente) return mensaje.reply(`Ya existe el canal panel: <#${panelExistente.id}>`);
+    if (panelExistente) return mensaje.reply(`Panel already exists: <#${panelExistente.id}>`);
     const canalPanel = await mensaje.guild.channels.create({ name: 'panel', type: ChannelType.GuildVoice });
-    return mensaje.reply(`Canal panel creado: <#${canalPanel.id}>\nCuando alguien se una, se creará su canal automáticamente`);
+    return mensaje.reply(`Panel created: <#${canalPanel.id}>`);
   }
 
-  // ========== ROLES — ESTILO BLEED ==========
+  // ========== ROLES ==========
   if (cmd === 'roles') {
     const todosRoles = mensaje.guild.roles.cache
       .filter(r => r.id !== mensaje.guild.id)
@@ -355,35 +356,13 @@ client.on('messageCreate', async mensaje => {
     return;
   }
 
-  // ========== WHITELIST ==========
-  if (cmd === 'whitelist') {
-    if (!mensaje.member.permissions.has(PermissionFlagsBits.Administrator))
-      return mensaje.reply('Permisos insuficientes — Solo Administradores');
-    const accion = args[0]?.toLowerCase();
-    const idUsuario = args[1];
-    const tipo = args[2]?.toLowerCase();
-
-    if (accion === 'add' && idUsuario && tipo) {
-      const clave = `${idUsuario}-${mensaje.guild.id}`;
-      sistema.whitelistAll.delete(clave); sistema.whitelist.delete(clave); sistema.whitelistPings.delete(clave); sistema.admins.delete(clave);
-      if (tipo === 'all') { sistema.whitelistAll.add(clave); return mensaje.reply(`<@${idUsuario}> añadido a WHITELIST ALL`); }
-      if (tipo === 'pings') { sistema.whitelistPings.add(clave); return mensaje.reply(`<@${idUsuario}> añadido a WHITELIST PINGS`); }
-      return mensaje.reply('Tipo inválido: all o pings');
-    }
-    if (accion === 'remove' && idUsuario) {
-      const clave = `${idUsuario}-${mensaje.guild.id}`;
-      sistema.whitelistAll.delete(clave); sistema.whitelist.delete(clave); sistema.whitelistPings.delete(clave);
-      return mensaje.reply(`<@${idUsuario}> eliminado de whitelist`);
-    }
-  }
-
   // ========== HELP ==========
   if (cmd === 'help' || cmd === 'cmd') {
-    const embed = new EmbedBuilder().setColor('#5865F2').setTitle('Comandos')
+    const embed = new EmbedBuilder().setColor('#5865F2').setTitle('Commands')
       .addFields(
-        { name: 'Antinuke', value: `\`${config.prefix}an config\` — Ver configuración\n\`${config.prefix}an enable\` — Activar/desactivar\n\`${config.prefix}an wl add <id>\` — Whitelist\n\`${config.prefix}an admin add <id>\` — Admin antinuke` },
-        { name: 'Voice', value: `\`${config.prefix}vc master\` — Crear canal panel` },
-        { name: 'Roles', value: `\`${config.prefix}roles\` — Lista de roles` }
+        { name: 'Antinuke (Owner Only 👑)', value: `\`${config.prefix}an config\` — View configuration\n\`${config.prefix}an enable\` — Toggle antinuke\n\`${config.prefix}an wl add <id>\` — Whitelist user\n\`${config.prefix}an admin add <id>\` — Add antinuke admin` },
+        { name: 'Voice', value: `\`${config.prefix}vc master\` — Create voice panel` },
+        { name: 'Roles', value: `\`${config.prefix}roles\` — List all roles` }
       );
     return mensaje.reply({ embeds: [embed] });
   }
@@ -391,5 +370,5 @@ client.on('messageCreate', async mensaje => {
 
 // 🔑 INICIAR BOT
 client.login(process.env.TOKEN)
-  .then(() => console.log('Bot Online — AntiNuke Active'))
+  .then(() => console.log('Bot Online — AntiNuke Active — Owner Only Config'))
   .catch(err => console.log(`Error: ${err.message}`));
