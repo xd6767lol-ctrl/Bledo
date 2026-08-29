@@ -1,225 +1,201 @@
-const { Client, GatewayIntentBits, Partials, EmbedBuilder, PermissionFlagsBits } = require('discord.js');
-const mongoose = require('mongoose');
 require('dotenv').config();
+const { Client, GatewayIntentBits, Partials, PermissionFlagsBits, AuditLogEvent, EmbedBuilder } = require('discord.js');
+const express = require('express');
+const app = express();
+const PORT = process.env.PORT || 10000;
 
+// ========== SERVIDOR WEB → PARA QUE FUNCIONE 24/7 EN RENDER ==========
+app.get('/', (req, res) => res.send('✅ Bot Activo — Sistema AntiNuke | En línea 24/7'));
+app.listen(PORT, '0.0.0.0', () => console.log(`✅ Puerto abierto — Escuchando en el puerto ${PORT}`));
+
+// ========== CONFIGURACIÓN ==========
+const config = {
+  prefix: ',', // ✅ PREFIJO COMA
+  reactionRoles: {
+    messageId: process.env.REACTION_MESSAGE_ID || "ID_DEL_MENSAJE_DE_REACCIONES",
+    roles: {
+      "🔴": process.env.ROLE_RED || "ID_DEL_ROL_ROJO",
+      "🔵": process.env.ROLE_BLUE || "ID_DEL_ROL_AZUL"
+    }
+  },
+  antinuke: {
+    enabled: true,
+    maxKicksPerMinute: 5,
+    maxBansPerMinute: 3,
+    maxChannelDeletes: 2,
+    whitelistedUsers: [],
+    whitelistedRoles: ["ID_ROL_ADMIN", "ID_ROL_MOD"],
+    logChannel: process.env.LOG_CHANNEL || "seguridad"
+  }
+};
+
+// ========== CLIENTE DISCORD ==========
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
     GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildMessageReactions,
+    GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildBans,
-    GatewayIntentBits.GuildInvites
+    GatewayIntentBits.GuildModeration,
+    GatewayIntentBits.GuildMessageReactions
   ],
   partials: [Partials.Message, Partials.Channel, Partials.Reaction, Partials.GuildMember]
 });
 
-// Configuración
-const config = {
-  prefix: ',',
-  colors: { main: 0x5865F2, success: 0x57F287, error: 0xED4245, warning: 0xFEE75C },
-  emojis: { success: '✅', error: '❌', shield: '🛡️', warn: '⚠️' }
+// ========== LOGGER ==========
+const logger = {
+  info: (msg) => console.log(`[INFO] ${msg}`),
+  success: (msg) => console.log(`[SUCCESS] ${msg}`),
+  error: (msg) => console.log(`[ERROR] ${msg}`)
 };
 
-// Validación de variables de entorno
-if (!process.env.TOKEN) {
-  console.error('ERROR: Falta TOKEN en el archivo .env');
-  process.exit(1);
-}
-if (!process.env.MONGODB_URI) {
-  console.error('ERROR: Falta MONGODB_URI en el archivo .env');
-  process.exit(1);
-}
+// ========== SISTEMA ANTINUKE ==========
+const antinuke = {
+  kicks: new Map(),
+  bans: new Map(),
+  channelDeletes: new Map(),
 
-// MongoDB Schema
-const guildSchema = new mongoose.Schema({
-  guildId: { type: String, required: true, unique: true },
-  antinuke: {
-    enabled: { type: Boolean, default: false },
-    whitelist: [{ type: String }],
-    limits: {
-      bans: { type: Number, default: 3 },
-      kicks: { type: Number, default: 3 },
-      channelDelete: { type: Number, default: 3 },
-      roleDelete: { type: Number, default: 3 }
-    },
-    punishment: { type: String, default: 'ban' },
-    logChannel: { type: String, default: null }
+  isWhitelisted(member) {
+    if (!config.antinuke.enabled) return true;
+    if (member.id === member.guild.ownerId) return true;
+    if (config.antinuke.whitelistedUsers.includes(member.id)) return true;
+    return member.roles.cache.some(role => config.antinuke.whitelistedRoles.includes(role.id));
   },
-  autorole: {
-    enabled: { type: Boolean, default: false },
-    roleId: { type: String, default: null }
+
+  async punish(guild, userId, action) {
+    try {
+      const member = await guild.members.fetch(userId).catch(() => null);
+      if (!member || this.isWhitelisted(member)) return;
+
+      if (action === 'ban') await member.ban({ reason: 'AntiNuke: Acciones masivas detectadas' });
+      else if (action === 'kick') await member.kick('AntiNuke: Acciones masivas detectadas');
+      else if (action === 'channel') await member.roles.set([], 'AntiNuke: Eliminación masiva de canales');
+
+      const logCh = guild.channels.cache.find(c => c.name === config.antinuke.logChannel);
+      if (logCh) await logCh.send(`🚨 **AntiNuke Activado**\nUsuario: <@${userId}>\nAcción: ${action}\nCastigo aplicado`);
+    } catch (e) { logger.error(`Error al sancionar ${userId}: ${e.message}`); }
   },
-  reactionRoles: [{
-    messageId: String,
-    channelId: String,
-    emoji: String,
-    roleId: String
-  }]
-});
 
-const Guild = mongoose.model('Guild', guildSchema);
-
-// Sistema Antinuke
-client.antinuke = new Map();
-
-async function checkAntinuke(guild, user, actionType) {
-  try {
-    const guildData = await Guild.findOne({ guildId: guild.id });
-    if (!guildData?.antinuke?.enabled) return false;
-    if (guildData.antinuke.whitelist.includes(user.id)) return false;
-    if (user.id === guild.ownerId) return false;
-
-    if (!client.antinuke.has(guild.id)) client.antinuke.set(guild.id, new Map());
-    const guildActions = client.antinuke.get(guild.id);
-
-    if (!guildActions.has(user.id)) guildActions.set(user.id, []);
-    const userActions = guildActions.get(user.id);
+  checkLimit(guildId, userId, type) {
     const now = Date.now();
+    const window = 60000; // 1 minuto
+    const map = this[type];
+    if (!map.has(guildId)) map.set(guildId, new Map());
+    const userMap = map.get(guildId);
+    if (!userMap.has(userId)) userMap.set(userId, []);
+    
+    const actions = userMap.get(userId).filter(t => now - t < window);
+    actions.push(now);
+    userMap.set(userId, actions);
 
-    userActions.push({ action: actionType, time: now });
-    const recent = userActions.filter(a => now - a.time < 10000);
-    guildActions.set(user.id, recent);
-
-    const limit = guildData.antinuke.limits[actionType] || 3;
-    const count = recent.filter(a => a.action === actionType).length;
-
-    if (count >= limit) {
-      const member = await guild.members.fetch(user.id).catch(() => null);
-      if (member) {
-        if (guildData.antinuke.punishment === 'ban') {
-          await member.ban({ reason: 'Antinuke: Acciones masivas detectadas' }).catch(() => null);
-        } else if (guildData.antinuke.punishment === 'kick') {
-          await member.kick('Antinuke: Acciones masivas detectadas').catch(() => null);
-        } else if (guildData.antinuke.punishment === 'strip') {
-          await member.roles.set([], 'Antinuke: Acciones masivas detectadas').catch(() => null);
-        }
-      }
-
-      if (guildData.antinuke.logChannel) {
-        const logCh = guild.channels.cache.get(guildData.antinuke.logChannel);
-        if (logCh) {
-          await logCh.send(`${config.emojis.shield} **Antinuke Activado**\nUsuario: ${user.tag} (${user.id})\nAcción: ${actionType}\nCastigo aplicado: ${guildData.antinuke.punishment}`).catch(() => null);
-        }
-      }
-      return true;
-    }
-    return false;
-  } catch (err) {
-    console.error('Error en checkAntinuke:', err);
-    return false;
+    const limit = config.antinuke[`max${type.charAt(0).toUpperCase() + type.slice(1)}PerMinute`];
+    return actions.length > limit ? actions.length : 0;
   }
-}
+};
 
-// Eventos
+// ========== EVENTOS ==========
 client.on('ready', () => {
-  console.log(`✅ Bot conectado como: ${client.user.tag}`);
+  logger.success(`Bot conectado como ${client.user.tag}`);
   client.user.setActivity(',help | Protegiendo servidores', { type: 3 });
 });
 
-client.on('guildMemberAdd', async (member) => {
-  try {
-    const data = await Guild.findOne({ guildId: member.guild.id });
-    if (data?.autorole?.enabled && data.autorole.roleId) {
-      const role = member.guild.roles.cache.get(data.autorole.roleId);
-      if (role) await member.roles.add(role).catch(() => null);
-    }
-  } catch (err) {
-    console.error('Error en autorole:', err);
-  }
-});
-
-client.on('channelDelete', async (channel) => {
-  if (!channel.guild) return;
-  try {
-    const audit = await channel.guild.fetchAuditLogs({ type: 12, limit: 1 });
-    const entry = audit.entries.first();
-    if (entry && Date.now() - entry.createdTimestamp < 5000) {
-      await checkAntinuke(channel.guild, entry.executor, 'channelDelete');
-    }
-  } catch (err) {}
-});
-
-client.on('roleDelete', async (role) => {
-  try {
-    const audit = await role.guild.fetchAuditLogs({ type: 32, limit: 1 });
-    const entry = audit.entries.first();
-    if (entry && Date.now() - entry.createdTimestamp < 5000) {
-      await checkAntinuke(role.guild, entry.executor, 'roleDelete');
-    }
-  } catch (err) {}
-});
-
+// AntiNuke: Kicks
 client.on('guildMemberRemove', async (member) => {
-  try {
-    const audit = await member.guild.fetchAuditLogs({ type: 20, limit: 1 });
-    const entry = audit.entries.first();
-    if (entry && entry.target.id === member.id && Date.now() - entry.createdTimestamp < 5000) {
-      await checkAntinuke(member.guild, entry.executor, 'kicks');
-    }
-  } catch (err) {}
+  if (member.user.bot || !config.antinuke.enabled) return;
+  const audit = await member.guild.fetchAuditLogs({ type: AuditLogEvent.MemberKick, limit: 1 }).catch(() => null);
+  const entry = audit?.entries.first();
+  if (!entry || entry.target.id !== member.id) return;
+  const count = antinuke.checkLimit(member.guild.id, entry.executor.id, 'kicks');
+  if (count > 0) await antinuke.punish(member.guild, entry.executor.id, 'kick');
 });
 
-// Comandos
+// AntiNuke: Bans
+client.on('guildBanAdd', async (ban) => {
+  if (ban.user.bot || !config.antinuke.enabled) return;
+  const audit = await ban.guild.fetchAuditLogs({ type: AuditLogEvent.MemberBanAdd, limit: 1 }).catch(() => null);
+  const entry = audit?.entries.first();
+  if (!entry) return;
+  const count = antinuke.checkLimit(ban.guild.id, entry.executor.id, 'bans');
+  if (count > 0) await antinuke.punish(ban.guild, entry.executor.id, 'ban');
+});
+
+// AntiNuke: Canales eliminados
+client.on('channelDelete', async (channel) => {
+  if (!channel.guild || !config.antinuke.enabled) return;
+  const audit = await channel.guild.fetchAuditLogs({ type: AuditLogEvent.ChannelDelete, limit: 1 }).catch(() => null);
+  const entry = audit?.entries.first();
+  if (!entry) return;
+  const count = antinuke.checkLimit(channel.guild.id, entry.executor.id, 'channelDeletes');
+  if (count > 0) await antinuke.punish(channel.guild, entry.executor.id, 'channel');
+});
+
+// ========== ROLES POR REACCIONES ==========
+client.on('messageReactionAdd', async (reaction, user) => {
+  if (user.bot) return;
+  if (reaction.partial) await reaction.fetch().catch(() => null);
+  if (reaction.message.partial) await reaction.message.fetch().catch(() => null);
+  if (reaction.message.id !== config.reactionRoles.messageId) return;
+
+  const roleId = config.reactionRoles.roles[reaction.emoji.name];
+  if (!roleId) return;
+
+  const member = reaction.message.guild.members.cache.get(user.id);
+  const role = reaction.message.guild.roles.cache.get(roleId);
+  if (member && role) await member.roles.add(role).catch(() => null);
+});
+
+client.on('messageReactionRemove', async (reaction, user) => {
+  if (user.bot) return;
+  if (reaction.partial) await reaction.fetch().catch(() => null);
+  if (reaction.message.partial) await reaction.message.fetch().catch(() => null);
+  if (reaction.message.id !== config.reactionRoles.messageId) return;
+
+  const roleId = config.reactionRoles.roles[reaction.emoji.name];
+  if (!roleId) return;
+
+  const member = reaction.message.guild.members.cache.get(user.id);
+  const role = reaction.message.guild.roles.cache.get(roleId);
+  if (member && role) await member.roles.remove(role).catch(() => null);
+});
+
+// ========== COMANDOS ==========
 client.on('messageCreate', async (message) => {
   if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith(config.prefix)) return;
 
-  let data = await Guild.findOne({ guildId: message.guild.id });
-  if (!data) data = await Guild.create({ guildId: message.guild.id });
-
-  const prefix = config.prefix;
-  if (!message.content.startsWith(prefix)) return;
-
-  const args = message.content.slice(prefix.length).trim().split(/ +/);
+  const args = message.content.slice(config.prefix.length).trim().split(/ +/);
   const cmd = args.shift()?.toLowerCase();
 
-  // ANTINUKE
-  if (cmd === 'antinuke') {
-    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
-      return message.reply(`${config.emojis.error} Necesitas permisos de Administrador`);
-    }
+  // HELP
+  if (cmd === 'help' || cmd === 'cmd') {
+    const embed = new EmbedBuilder()
+      .setColor(0x5865F2)
+      .setTitle('🤖 Comandos del Bot')
+      .setDescription(`Prefijo: \`${config.prefix}\``)
+      .addFields(
+        { name: '🛡️ AntiNuke', value: '`,antinuke enable` — Activar protección\n`,antinuke disable` — Desactivar\n`,whitelist add/remove @user` — Administrar whitelist' },
+        { name: '🎭 Roles por Reacciones', value: 'Sistema automático activo' },
+        { name: '⚙️ Utilidad', value: '`,help` — Mostrar este menú' }
+      );
+    return message.reply({ embeds: [embed] });
+  }
 
+  // ANTINUKE ON/OFF
+  if (cmd === 'antinuke') {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) 
+      return message.reply('❌ Necesitas permisos de Administrador');
+    
     const sub = args[0]?.toLowerCase();
-    if (!sub || sub === 'status') {
-      return message.reply(`${config.emojis.shield} **Antinuke Estado:** ${data.antinuke.enabled ? '✅ Activado' : '❌ Desactivado'}\nCastigo: ${data.antinuke.punishment}\nWhitelist: ${data.antinuke.whitelist.length} usuarios`);
-    }
     if (sub === 'enable') {
-      data.antinuke.enabled = true;
-      await data.save();
-      return message.reply(`${config.emojis.success} Antinuke activado correctamente`);
+      config.antinuke.enabled = true;
+      return message.reply('✅ AntiNuke activado y protegiendo el servidor');
     }
     if (sub === 'disable') {
-      data.antinuke.enabled = false;
-      await data.save();
-      return message.reply(`${config.emojis.error} Antinuke desactivado`);
+      config.antinuke.enabled = false;
+      return message.reply('⚠️ AntiNuke desactivado — ¡El servidor está sin protección!');
     }
-    if (sub === 'punishment') {
-      const p = args[1]?.toLowerCase();
-      if (!['ban', 'kick', 'strip'].includes(p)) {
-        return message.reply(`${config.emojis.error} Opciones válidas: ban, kick, strip`);
-      }
-      data.antinuke.punishment = p;
-      await data.save();
-      return message.reply(`${config.emojis.success} Castigo establecido: ${p}`);
-    }
-    if (sub === 'logs') {
-      const ch = message.mentions.channels.first();
-      if (!ch) return message.reply(`${config.emojis.error} Menciona un canal: ,antinuke logs #canal`);
-      data.antinuke.logChannel = ch.id;
-      await data.save();
-      return message.reply(`${config.emojis.success} Canal de logs establecido: ${ch}`);
-    }
-    if (sub === 'limit') {
-      const action = args[1]?.toLowerCase();
-      const value = parseInt(args[2]);
-      if (!['bans', 'kicks', 'channelDelete', 'roleDelete'].includes(action) || isNaN(value)) {
-        return message.reply(`${config.emojis.error} Uso: ,antinuke limit <bans/kicks/channelDelete/roleDelete> <numero>`);
-      }
-      data.antinuke.limits[action] = value;
-      await data.save();
-      return message.reply(`${config.emojis.success} Límite de ${action}: ${value}`);
-    }
+    return message.reply(`🛡️ AntiNuke está ${config.antinuke.enabled ? '✅ ACTIVADO' : '❌ DESACTIVADO'}`);
   }
 
   // WHITELIST
@@ -229,95 +205,24 @@ client.on('messageCreate', async (message) => {
     const user = message.mentions.users.first();
 
     if (sub === 'add' && user) {
-      if (data.antinuke.whitelist.includes(user.id)) {
-        return message.reply(`${config.emojis.error} El usuario ya está en la whitelist`);
+      if (!config.antinuke.whitelistedUsers.includes(user.id)) {
+        config.antinuke.whitelistedUsers.push(user.id);
+        return message.reply(`✅ <@${user.id}> añadido a la whitelist`);
       }
-      data.antinuke.whitelist.push(user.id);
-      await data.save();
-      return message.reply(`${config.emojis.success} ${user.tag} añadido a la whitelist`);
+      return message.reply('❌ Ya está en la whitelist');
     }
     if (sub === 'remove' && user) {
-      data.antinuke.whitelist = data.antinuke.whitelist.filter(id => id !== user.id);
-      await data.save();
-      return message.reply(`${config.emojis.success} ${user.tag} eliminado de la whitelist`);
+      config.antinuke.whitelistedUsers = config.antinuke.whitelistedUsers.filter(id => id !== user.id);
+      return message.reply(`✅ <@${user.id}> eliminado de la whitelist`);
     }
-    const list = data.antinuke.whitelist.length > 0
-      ? data.antinuke.whitelist.map(id => `<@${id}>`).join(', ')
+    const list = config.antinuke.whitelistedUsers.length > 0 
+      ? config.antinuke.whitelistedUsers.map(id => `<@${id}>`).join(', ') 
       : 'Vacía';
     return message.reply(`📋 Whitelist:\n${list}`);
   }
-
-  // MODERACIÓN
-  if (cmd === 'ban') {
-    if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return;
-    const user = message.mentions.users.first() || await client.users.fetch(args[0]).catch(() => null);
-    if (!user) return message.reply(`${config.emojis.error} Usuario no encontrado`);
-    const reason = args.slice(1).join(' ') || 'Sin razón especificada';
-    await message.guild.members.ban(user, { reason }).catch(() => message.reply(`${config.emojis.error} No pude banear al usuario`));
-    return message.reply(`${config.emojis.success} ${user.tag} ha sido baneado`);
-  }
-
-  if (cmd === 'kick') {
-    if (!message.member.permissions.has(PermissionFlagsBits.KickMembers)) return;
-    const member = message.mentions.members.first();
-    if (!member) return message.reply(`${config.emojis.error} Menciona un miembro`);
-    await member.kick().catch(() => message.reply(`${config.emojis.error} No pude expulsar al usuario`));
-    return message.reply(`${config.emojis.success} ${member.user.tag} ha sido expulsado`);
-  }
-
-  if (cmd === 'purge') {
-    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return;
-    const amount = parseInt(args[0]);
-    if (!amount || amount < 1 || amount > 100) {
-      return message.reply(`${config.emojis.error} Usa: ,purge <1-100>`);
-    }
-    const deleted = await message.channel.bulkDelete(amount, true).catch(() => null);
-    const msg = await message.channel.send(`${config.emojis.success} ${deleted?.size || 0} mensajes eliminados`);
-    setTimeout(() => msg.delete().catch(() => null), 3000);
-  }
-
-  // ROLES
-  if (cmd === 'autorole') {
-    if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return;
-    const sub = args[0]?.toLowerCase();
-    if (sub === 'set') {
-      const role = message.mentions.roles.first();
-      if (!role) return message.reply(`${config.emojis.error} Menciona un rol: ,autorole set @rol`);
-      data.autorole = { enabled: true, roleId: role.id };
-      await data.save();
-      return message.reply(`${config.emojis.success} Auto-role establecido: ${role.name}`);
-    }
-    if (sub === 'disable') {
-      data.autorole.enabled = false;
-      await data.save();
-      return message.reply(`${config.emojis.success} Auto-role desactivado`);
-    }
-    return message.reply(`Auto-role: ${data.autorole.enabled ? `✅ <@&${data.autorole.roleId}>` : '❌ Desactivado'}`);
-  }
-
-  // UTILIDAD
-  if (cmd === 'ping') {
-    return message.reply(`🏓 Pong!\nLatencia: ${Date.now() - message.createdTimestamp}ms\nAPI: ${client.ws.ping}ms`);
-  }
-
-  if (cmd === 'help') {
-    const embed = new EmbedBuilder()
-      .setColor(config.colors.main)
-      .setTitle('🤖 Comandos del Bot')
-      .setDescription(`Prefijo: \`${config.prefix}\``)
-      .addFields(
-        { name: '🛡️ Antinuke', value: '`,antinuke enable/disable`\n`,antinuke punishment ban/kick/strip`\n`,antinuke logs #canal`\n`,antinuke limit <acción> <número>`\n`,whitelist add/remove @user` },
-        { name: '🔨 Moderación', value: '`,ban @user [razón]`\n`,kick @user`\n`,purge <cantidad>`' },
-        { name: '👥 Roles', value: '`,autorole set @rol`\n`,autorole disable`' },
-        { name: '⚙️ Utilidad', value: '`,ping`\n`,help`' }
-      );
-    return message.reply({ embeds: [embed] });
-  }
 });
 
-// Conectar MongoDB
-mongoose.connect(process.env.MONGODB_URI)
-  .then(() => console.log('✅ MongoDB conectado correctamente'))
-  .catch(err => console.error('❌ Error de conexión MongoDB:', err));
-
-client.login(process.env.TOKEN);
+// ========== INICIAR BOT ==========
+client.login(process.env.TOKEN)
+  .then(() => logger.success('Bot iniciado correctamente'))
+  .catch(err => logger.error(`Error al iniciar: ${err.message}`));
