@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits, Partials, PermissionFlagsBits, AuditLogEvent, EmbedBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, PermissionFlagsBits, AuditLogEvent, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType } = require('discord.js');
 const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -13,12 +13,18 @@ const config = {
     historyRetentionDays: 7,
     antinuke: {
         enabled: true,
+        protection: { bans: true, kicks: true, channels: true, roles: true, webhooks: true, serverName: true, serverIcon: true, permissions: true },
+        limits: { bansPerMinute: 3, kicksPerMinute: 5, channelsPerMinute: 3, rolesPerMinute: 3 },
         punishment: 'remove_roles'
-    }
+    },
+    voicemaster: { enabled: true, defaultLimit: 0, categoryName: 'Voice Channels' }
 };
 
+const voiceChannels = new Map();
+const antinukeCounters = new Map();
 const whitelist = new Set();
-const roleOwners = new Set();
+const roleOwners = new Set(); // Whitelist own para modificar roles manualmente
+const antinukeAdmins = new Set();
 const avatarHistory = new Map();
 const nameHistory = new Map();
 
@@ -28,14 +34,21 @@ const client = new Client({
         GatewayIntentBits.MessageContent, GatewayIntentBits.GuildModeration, GatewayIntentBits.GuildVoiceStates,
         GatewayIntentBits.GuildMessageReactions, GatewayIntentBits.GuildPresences
     ],
-    partials: [Partials.Channel, Partials.Message, Partials.Reaction, Partials.GuildMember]
+    partials: [Partials.Channel, Partials.Message, Partials.User, Partials.Reaction, Partials.GuildMember]
 });
 
 function createEmbed(title, description, color = '#2B2D31') {
-    return new EmbedBuilder().setColor(color).setTitle(title).setDescription(description).setFooter({ text: 'Made by chingones' }).setTimestamp();
+    return new EmbedBuilder()
+        .setColor(color)
+        .setTitle(title)
+        .setDescription(description)
+        .setFooter({ text: 'Made by chingones' })
+        .setTimestamp();
 }
 function isOwner(userId, guild) { return userId === guild.ownerId; }
+function isWhitelisted(userId) { return whitelist.has(userId); }
 function isRoleOwner(userId, guild) { return isOwner(userId, guild) || roleOwners.has(userId); }
+function isAntinukeAdmin(userId) { return antinukeAdmins.has(userId); }
 
 async function punishExecutor(member, reason) {
     if (!member || isOwner(member.id, member.guild)) return;
@@ -44,8 +57,73 @@ async function punishExecutor(member, reason) {
     console.log(`[ROLE PROTECTION] ${member.user.tag} — ${reason} — Roles removed`);
 }
 
-client.on('ready', () => console.log(`Logged in as ${client.user.tag}`));
+function trackAction(userId, action, limit) {
+    const now = Date.now();
+    if (!antinukeCounters.has(userId)) antinukeCounters.set(userId, {});
+    const userData = antinukeCounters.get(userId);
+    if (!userData[action]) userData[action] = [];
+    userData[action] = userData[action].filter(time => now - time < 60000);
+    userData[action].push(now);
+    return userData[action].length > limit;
+}
 
+async function punish(guild, user, reason) {
+    if (user.id === guild.ownerId || isWhitelisted(user.id)) return;
+    const member = await guild.members.fetch(user.id).catch(() => null);
+    if (!member) return;
+    if (config.antinuke.punishment === 'remove_roles') {
+        const roles = member.roles.cache.filter(r => r.id !== guild.id);
+        await member.roles.remove(roles, reason).catch(() => null);
+    } else if (config.antinuke.punishment === 'ban') {
+        await member.ban({ reason }).catch(() => null);
+    } else if (config.antinuke.punishment === 'kick') {
+        await member.kick(reason).catch(() => null);
+    }
+    console.log(`[ANTINUKE] ${user.tag} — ${reason}`);
+}
+
+setInterval(() => {
+    const cutoff = Date.now() - (config.historyRetentionDays * 24 * 60 * 60 * 1000);
+    for (const [userId, avatars] of avatarHistory) {
+        avatarHistory.set(userId, avatars.filter(a => a.timestamp > cutoff));
+        if (avatarHistory.get(userId).length === 0) avatarHistory.delete(userId);
+    }
+    for (const [userId, names] of nameHistory) {
+        nameHistory.set(userId, names.filter(n => n.timestamp > cutoff));
+        if (nameHistory.get(userId).length === 0) nameHistory.delete(userId);
+    }
+}, 60 * 60 * 1000);
+
+client.on('ready', () => {
+    console.log(`Logged in as ${client.user.tag}`);
+    client.user.setActivity({ type: 3, name: 'for unauthorized activity' });
+});
+
+client.on('userUpdate', async (oldUser, newUser) => {
+    if (oldUser.avatar !== newUser.avatar) {
+        if (!avatarHistory.has(newUser.id)) avatarHistory.set(newUser.id, []);
+        const history = avatarHistory.get(newUser.id);
+        const cutoff = Date.now() - (config.historyRetentionDays * 24 * 60 * 60 * 1000);
+        const lastEntry = history[history.length - 1];
+        const newAvatarUrl = newUser.displayAvatarURL({ size: 512, dynamic: true });
+        if (!lastEntry || lastEntry.url !== newAvatarUrl && Date.now() - lastEntry.timestamp > 5000) {
+            history.push({ url: newAvatarUrl, timestamp: Date.now() });
+            avatarHistory.set(newUser.id, history.filter(a => a.timestamp > cutoff));
+        }
+    }
+    if (oldUser.username !== newUser.username) {
+        if (!nameHistory.has(newUser.id)) nameHistory.set(newUser.id, []);
+        const history = nameHistory.get(newUser.id);
+        const cutoff = Date.now() - (config.historyRetentionDays * 24 * 60 * 60 * 1000);
+        const lastEntry = history[history.length - 1];
+        if (!lastEntry || lastEntry.name !== newUser.username && Date.now() - lastEntry.timestamp > 5000) {
+            history.push({ name: newUser.username, timestamp: Date.now() });
+            nameHistory.set(newUser.id, history.filter(n => n.timestamp > cutoff));
+        }
+    }
+});
+
+// === PROTECCIÓN DE ROLES MANUALES ===
 client.on('guildMemberUpdate', async (oldMember, newMember) => {
     if (!config.antinuke.enabled) return;
     if (oldMember.roles.cache.size === newMember.roles.cache.size) return;
@@ -61,19 +139,123 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
     const removedRoles = oldMember.roles.cache.filter(r => !newMember.roles.cache.has(r.id));
     
     if (addedRoles.size > 0 || removedRoles.size > 0) {
+        // Revertir el cambio a la víctima
         for (const [roleId] of addedRoles) await newMember.roles.remove(roleId).catch(() => null);
         for (const [roleId] of removedRoles) await newMember.roles.add(roleId).catch(() => null);
-        
+        // Quitar roles al que abusó
         const executorMember = await newMember.guild.members.fetch(executor.id).catch(() => null);
         if (executorMember) await punishExecutor(executorMember, 'Modified roles manually without whitelist');
     }
 });
 
+client.on('guildBanAdd', async ban => {
+    if (!config.antinuke.enabled) return;
+    const audit = await ban.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.MemberBanAdd }).catch(() => null);
+    const executor = audit?.entries.first()?.executor;
+    if (!executor || executor.bot) return;
+    if (executor.id === ban.guild.ownerId || isWhitelisted(executor.id)) return;
+    if (trackAction(executor.id, 'bans', config.antinuke.limits.bansPerMinute)) await punish(ban.guild, executor, 'Exceeded ban limit');
+});
+
+client.on('guildMemberRemove', async member => {
+    if (!config.antinuke.enabled) return;
+    const audit = await member.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.MemberKick }).catch(() => null);
+    const entry = audit?.entries.first();
+    if (!entry || entry.target.id !== member.id) return;
+    const executor = entry.executor;
+    if (!executor || executor.bot || executor.id === member.guild.ownerId || isWhitelisted(executor.id)) return;
+    if (trackAction(executor.id, 'kicks', config.antinuke.limits.kicksPerMinute)) await punish(member.guild, executor, 'Exceeded kick limit');
+});
+
+client.on('channelCreate', async channel => {
+    if (!config.antinuke.enabled) return;
+    const audit = await channel.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.ChannelCreate }).catch(() => null);
+    const executor = audit?.entries.first()?.executor;
+    if (!executor || executor.bot || executor.id === channel.guild.ownerId || isWhitelisted(executor.id)) return;
+    if (trackAction(executor.id, 'channels', config.antinuke.limits.channelsPerMinute)) {
+        await punish(channel.guild, executor, 'Exceeded channel creation limit');
+        await channel.delete().catch(() => null);
+    }
+});
+
+client.on('channelDelete', async channel => {
+    if (!config.antinuke.enabled) return;
+    const audit = await channel.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.ChannelDelete }).catch(() => null);
+    const executor = audit?.entries.first()?.executor;
+    if (!executor || executor.bot || executor.id === channel.guild.ownerId || isWhitelisted(executor.id)) return;
+    if (trackAction(executor.id, 'channels', config.antinuke.limits.channelsPerMinute)) await punish(channel.guild, executor, 'Exceeded channel delete limit');
+});
+
+client.on('roleCreate', async role => {
+    if (!config.antinuke.enabled) return;
+    const audit = await role.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.RoleCreate }).catch(() => null);
+    const executor = audit?.entries.first()?.executor;
+    if (!executor || executor.bot || executor.id === role.guild.ownerId || isWhitelisted(executor.id)) return;
+    if (trackAction(executor.id, 'roles', config.antinuke.limits.rolesPerMinute)) {
+        await punish(role.guild, executor, 'Exceeded role creation limit');
+        await role.delete().catch(() => null);
+    }
+});
+
+client.on('roleDelete', async role => {
+    if (!config.antinuke.enabled) return;
+    const audit = await role.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.RoleDelete }).catch(() => null);
+    const executor = audit?.entries.first()?.executor;
+    if (!executor || executor.bot || executor.id === role.guild.ownerId || isWhitelisted(executor.id)) return;
+    await punish(role.guild, executor, 'Role deletion without permission');
+});
+
+client.on('guildUpdate', async (oldGuild, newGuild) => {
+    if (!config.antinuke.enabled) return;
+    const audit = await newGuild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.GuildUpdate }).catch(() => null);
+    const executor = audit?.entries.first()?.executor;
+    if (!executor || executor.bot || executor.id === newGuild.ownerId || isWhitelisted(executor.id)) return;
+    if (oldGuild.name !== newGuild.name && config.antinuke.protection.serverName) {
+        await newGuild.setName(oldGuild.name).catch(() => null);
+        await punish(newGuild, executor, 'Server name changed without permission');
+    }
+    if (oldGuild.icon !== newGuild.icon && config.antinuke.protection.serverIcon) {
+        await newGuild.setIcon(oldGuild.iconURL()).catch(() => null);
+        await punish(newGuild, executor, 'Server icon changed without permission');
+    }
+});
+
 client.on('messageCreate', async message => {
-    if (message.author.bot || !message.guild || !message.content.startsWith(config.prefix)) return;
+    if (message.author.bot || !message.guild) return;
+    if (message.mentions.everyone && !isWhitelisted(message.author.id) && message.author.id !== message.guild.ownerId) {
+        await message.delete().catch(() => null);
+    }
+});
+
+client.on('voiceStateUpdate', async (oldState, newState) => {
+    if (!config.voicemaster.enabled) return;
+    const user = newState.member?.user;
+    const joinedChannel = newState.channel;
+    const leftChannel = oldState.channel;
+    if (leftChannel && voiceChannels.has(leftChannel.id) && leftChannel.members.size === 0) {
+        await leftChannel.delete().catch(() => null);
+        voiceChannels.delete(leftChannel.id);
+    }
+    if (!joinedChannel || !user) return;
+    if (joinedChannel.name.toLowerCase() === 'panel') {
+        const existing = Array.from(voiceChannels.entries()).find(([_, d]) => d.ownerId === user.id);
+        if (existing) return await newState.setChannel(existing[0]).catch(() => null);
+        const voiceChannel = await joinedChannel.guild.channels.create({
+            name: user.username, type: ChannelType.GuildVoice, parent: joinedChannel.parent,
+            permissionOverwrites: [{ id: user.id, allow: [PermissionFlagsBits.ManageChannels, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak] }]
+        });
+        voiceChannels.set(voiceChannel.id, { ownerId: user.id, ownerName: user.username });
+        await newState.setChannel(voiceChannel).catch(() => null);
+    }
+});
+
+client.on('messageCreate', async message => {
+    if (message.author.bot || !message.guild) return;
+    if (!message.content.startsWith(config.prefix)) return;
     const args = message.content.slice(config.prefix.length).trim().split(/ +/);
     const cmd = args.shift()?.toLowerCase();
 
+    // === COMANDOS WHITELIST OWN ===
     if (cmd === 'wl') {
         if (!isOwner(message.author.id, message.guild)) {
             return message.reply({ embeds: [createEmbed('Access Denied', 'Only the server owner can use this command.', '#ED4245')] });
@@ -101,6 +283,7 @@ client.on('messageCreate', async message => {
         return;
     }
 
+    // === COMANDO DAR ROL ===
     if (cmd === 'r') {
         if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) {
             return message.reply({ embeds: [createEmbed('Access Denied', 'Insufficient permissions — Need Manage Roles.', '#ED4245')] });
@@ -119,10 +302,109 @@ client.on('messageCreate', async message => {
         if (role.position >= message.member.roles.highest.position && !isOwner(message.author.id, message.guild)) {
             return message.reply({ embeds: [createEmbed('Error', 'You cannot assign a role higher than your own.', '#ED4245')] });
         }
+        if (role.position >= message.guild.members.me.roles.highest.position) {
+            return message.reply({ embeds: [createEmbed('Error', 'I cannot assign this role — it is higher than my highest role.', '#ED4245')] });
+        }
         await member.roles.add(role).catch(err => {
             return message.reply({ embeds: [createEmbed('Error', `Failed to assign role: ${err.message}`, '#ED4245')] });
         });
         return message.reply({ embeds: [createEmbed('Role Assigned', `Successfully assigned **${role.name}** to ${member.user}.`, '#57F287')] });
+    }
+
+    if (cmd === 'avatars') {
+        const targetId = args[0]?.replace(/[<@!>]/g, '') || message.author.id;
+        const target = await client.users.fetch(targetId).catch(() => null);
+        if (!target) return message.reply({ embeds: [createEmbed('Error', 'User not found.', '#ED4245')] });
+        const history = avatarHistory.get(targetId) || [];
+        if (history.length === 0) {
+            return message.reply({ embeds: [createEmbed('Avatar History', `No avatar changes recorded for <@${targetId}> in the last ${config.historyRetentionDays} days.`)] });
+        }
+        const embed = createEmbed('Avatar History', `**User:** <@${targetId}>\n**Changes in last ${config.historyRetentionDays} days:** ${history.length}`);
+        embed.setImage(history[history.length - 1].url);
+        return message.reply({ embeds: [embed] });
+    }
+
+    if (cmd === 'names') {
+        const targetId = args[0]?.replace(/[<@!>]/g, '') || message.author.id;
+        const target = await client.users.fetch(targetId).catch(() => null);
+        if (!target) return message.reply({ embeds: [createEmbed('Error', 'User not found.', '#ED4245')] });
+        const history = nameHistory.get(targetId) || [];
+        if (history.length === 0) {
+            return message.reply({ embeds: [createEmbed('Username History', `No username changes recorded for <@${targetId}> in the last ${config.historyRetentionDays} days.`)] });
+        }
+        const nameList = history.map((entry, i) => {
+            const date = new Date(entry.timestamp).toLocaleDateString('es-MX');
+            return `\`${i + 1}.\` **${entry.name}** — ${date}`;
+        }).join('\n');
+        return message.reply({ embeds: [createEmbed('Username History', `**User:** <@${targetId}>\n**Changes in last ${config.historyRetentionDays} days:** ${history.length}\n\n${nameList}`)] });
+    }
+
+    if (cmd === 'clear' && args[0]?.toLowerCase() === 'avatars') {
+        if (!isOwner(message.author.id, message.guild)) return message.reply({ embeds: [createEmbed('Access Denied', 'Only the server owner can use this command.', '#ED4245')] });
+        const targetId = args[1]?.replace(/[<@!>]/g, '');
+        if (!targetId) return message.reply({ embeds: [createEmbed('Usage', `\`${config.prefix}clear avatars @User\``)] });
+        avatarHistory.delete(targetId);
+        return message.reply({ embeds: [createEmbed('History Cleared', `Avatar history cleared for <@${targetId}>.`, '#57F287')] });
+    }
+
+    if (cmd === 'clear' && args[0]?.toLowerCase() === 'names') {
+        if (!isOwner(message.author.id, message.guild)) return message.reply({ embeds: [createEmbed('Access Denied', 'Only the server owner can use this command.', '#ED4245')] });
+        const targetId = args[1]?.replace(/[<@!>]/g, '');
+        if (!targetId) return message.reply({ embeds: [createEmbed('Usage', `\`${config.prefix}clear names @User\``)] });
+        nameHistory.delete(targetId);
+        return message.reply({ embeds: [createEmbed('History Cleared', `Username history cleared for <@${targetId}>.`, '#57F287')] });
+    }
+
+    if ((cmd === 'an' || cmd === 'antinuke') && args[0]?.toLowerCase() === 'config') {
+        if (!isOwner(message.author.id, message.guild)) {
+            return message.reply({ embeds: [createEmbed('Access Denied', 'Only the server owner can configure antinuke.', '#ED4245')] });
+        }
+        const embed = createEmbed('Antinuke Configuration', 'Only the server owner can modify these settings.')
+            .addFields(
+                { name: 'Status', value: config.antinuke.enabled ? 'Enabled' : 'Disabled', inline: true },
+                { name: 'Role Whitelist', value: `${roleOwners.size} users`, inline: true },
+                { name: 'Bans', value: config.antinuke.protection.bans ? 'Enabled' : 'Disabled', inline: true },
+                { name: 'Kicks', value: config.antinuke.protection.kicks ? 'Enabled' : 'Disabled', inline: true },
+                { name: 'Channels', value: config.antinuke.protection.channels ? 'Enabled' : 'Disabled', inline: true },
+                { name: 'Roles', value: config.antinuke.protection.roles ? 'Enabled' : 'Disabled', inline: true },
+                { name: 'Limits', value: `Bans: ${config.antinuke.limits.bansPerMinute}/min\nKicks: ${config.antinuke.limits.kicksPerMinute}/min` },
+                { name: 'Commands', value: `\`${config.prefix}wl own @User\` — Toggle role permission\n\`${config.prefix}wl own list\` — View list\n\`${config.prefix}an wl add <id>\` — Whitelist\n\`${config.prefix}an admin add <id>\` — Add admin` }
+            );
+        return message.reply({ embeds: [embed] });
+    }
+
+    if ((cmd === 'an' || cmd === 'antinuke') && args[0]?.toLowerCase() === 'enable') {
+        if (!isOwner(message.author.id, message.guild)) {
+            return message.reply({ embeds: [createEmbed('Access Denied', 'Only the server owner can modify this setting.', '#ED4245')] });
+        }
+        config.antinuke.enabled = !config.antinuke.enabled;
+        return message.reply({ embeds: [createEmbed('Antinuke Updated', `Antinuke protection has been ${config.antinuke.enabled ? '**enabled**' : '**disabled**'}.`, '#57F287')] });
+    }
+
+    if ((cmd === 'an' || cmd === 'antinuke') && args[0]?.toLowerCase() === 'wl') {
+        if (!isOwner(message.author.id, message.guild)) return message.reply({ embeds: [createEmbed('Access Denied', 'Only the server owner can manage whitelist.', '#ED4245')] });
+        const action = args[1]?.toLowerCase();
+        const userId = args[2]?.replace(/[<@!>]/g, '');
+        if (!userId) return message.reply({ embeds: [createEmbed('Error', 'Provide a valid user ID.', '#ED4245')] });
+        if (action === 'add') { whitelist.add(userId); return message.reply({ embeds: [createEmbed('Whitelist Updated', `<@${userId}> added to whitelist.`, '#57F287')] }); }
+        if (action === 'remove') { whitelist.delete(userId); return message.reply({ embeds: [createEmbed('Whitelist Updated', `<@${userId}> removed from whitelist.`, '#FEE75C')] }); }
+    }
+
+    if ((cmd === 'an' || cmd === 'antinuke') && args[0]?.toLowerCase() === 'admin') {
+        if (!isOwner(message.author.id, message.guild)) return message.reply({ embeds: [createEmbed('Access Denied', 'Only the server owner can manage antinuke admins.', '#ED4245')] });
+        const action = args[1]?.toLowerCase();
+        const userId = args[2]?.replace(/[<@!>]/g, '');
+        if (!userId) return message.reply({ embeds: [createEmbed('Error', 'Provide a valid user ID.', '#ED4245')] });
+        if (action === 'add') { antinukeAdmins.add(userId); return message.reply({ embeds: [createEmbed('Admin Updated', `<@${userId}> is now an antinuke admin.`, '#57F287')] }); }
+        if (action === 'remove') { antinukeAdmins.delete(userId); return message.reply({ embeds: [createEmbed('Admin Updated', `<@${userId}> is no longer an antinuke admin.`, '#FEE75C')] }); }
+    }
+
+    if (cmd === 'vc' && args[0]?.toLowerCase() === 'master') {
+        if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return message.reply({ embeds: [createEmbed('Access Denied', 'Insufficient permissions.', '#ED4245')] });
+        const existing = message.guild.channels.cache.find(c => c.name.toLowerCase() === 'panel' && c.type === ChannelType.GuildVoice);
+        if (existing) return message.reply({ embeds: [createEmbed('VoiceMaster', `Panel already exists: <#${existing.id}>`)] });
+        const panel = await message.guild.channels.create({ name: 'panel', type: ChannelType.GuildVoice });
+        return message.reply({ embeds: [createEmbed('VoiceMaster', `Panel created: <#${panel.id}>`, '#57F287')] });
     }
 
     if (cmd === 'roles') {
@@ -138,13 +420,72 @@ client.on('messageCreate', async message => {
         return message.reply(generatePage(page));
     }
 
+    if (cmd === 'clear' || cmd === 'c') {
+        if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return message.reply({ embeds: [createEmbed('Access Denied', 'Insufficient permissions.', '#ED4245')] });
+        const amount = parseInt(args[0]) || 5;
+        if (amount < 1 || amount > 100) return message.reply({ embeds: [createEmbed('Error', 'Use 1-100 messages.', '#ED4245')] });
+        await message.delete().catch(() => null);
+        const messages = await message.channel.bulkDelete(amount, true).catch(() => null);
+        return message.reply({ embeds: [createEmbed('Messages Cleared', `${messages?.size || 0} messages deleted.`, '#57F287')] });
+    }
+
+    if (cmd === 'ban') {
+        if (!message.member.permissions.has(PermissionFlagsBits.KickMembers)) return message.reply({ embeds: [createEmbed('Access Denied', 'Insufficient permissions — Need Kick Members.', '#ED4245')] });
+        const targetId = args[0]?.replace(/[<@!>]/g, '');
+        if (!targetId) return message.reply({ embeds: [createEmbed('Usage', `\`${config.prefix}ban @User [reason]\` — Kick user from server`)] });
+        const member = await message.guild.members.fetch(targetId).catch(() => null);
+        if (!member) return message.reply({ embeds: [createEmbed('Error', 'User not found.', '#ED4245')] });
+        if (member.permissions.has(PermissionFlagsBits.Administrator) || member.id === message.guild.ownerId) {
+            return message.reply({ embeds: [createEmbed('Error', 'Cannot kick this user.', '#ED4245')] });
+        }
+        const reason = args.slice(1).join(' ') || 'No reason';
+        await member.kick(reason).catch(err => {
+            return message.reply({ embeds: [createEmbed('Error', `Failed to kick: ${err.message}`, '#ED4245')] });
+        });
+        return message.reply({ embeds: [createEmbed('User Kicked', `<@${targetId}> has been kicked from the server.\nReason: ${reason}`, '#FEE75C')] });
+    }
+
+    if (cmd === 'hb') {
+        if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return message.reply({ embeds: [createEmbed('Access Denied', 'Insufficient permissions — Need Ban Members.', '#ED4245')] });
+        const targetId = args[0]?.replace(/[<@!>]/g, '');
+        if (!targetId) return message.reply({ embeds: [createEmbed('Usage', `\`${config.prefix}hb @User [reason]\` — Ban user from server`)] });
+        const member = await message.guild.members.fetch(targetId).catch(() => null);
+        if (member) {
+            if (member.permissions.has(PermissionFlagsBits.Administrator) || member.id === message.guild.ownerId) {
+                return message.reply({ embeds: [createEmbed('Error', 'Cannot ban this user.', '#ED4245')] });
+            }
+        }
+        const reason = args.slice(1).join(' ') || 'No reason';
+        await message.guild.members.ban(targetId, { reason }).catch(err => {
+            return message.reply({ embeds: [createEmbed('Error', `Failed to ban: ${err.message}`, '#ED4245')] });
+        });
+        return message.reply({ embeds: [createEmbed('User Banned', `<@${targetId}> has been banned from the server.\nReason: ${reason}`, '#ED4245')] });
+    }
+
+    if (cmd === 'lock') {
+        if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return message.reply({ embeds: [createEmbed('Access Denied', 'Insufficient permissions.', '#ED4245')] });
+        await message.channel.permissionOverwrites.edit(message.guild.id, { SendMessages: false });
+        return message.reply({ embeds: [createEmbed('Channel Locked', 'This channel has been locked.', '#ED4245')] });
+    }
+
+    if (cmd === 'unlock') {
+        if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return message.reply({ embeds: [createEmbed('Access Denied', 'Insufficient permissions.', '#ED4245')] });
+        await message.channel.permissionOverwrites.edit(message.guild.id, { SendMessages: true });
+        return message.reply({ embeds: [createEmbed('Channel Unlocked', 'This channel has been unlocked.', '#57F287')] });
+    }
+
     if (cmd === 'help' || cmd === 'cmd') {
-        return message.reply({ embeds: [createEmbed('Commands', `Prefix: \`${config.prefix}\``)
+        const embed = createEmbed('Commands', `Prefix: \`${config.prefix}\``)
             .addFields(
-                { name: 'Roles', value: `\`${config.prefix}r <@User/ID> <Role>\` — Assign role (Role 2 only manual)\n\`${config.prefix}wl own @User/ID\` — Toggle manual role permission (Owner only)\n\`${config.prefix}wl own list\` — View whitelist (Owner only)\n\`${config.prefix}roles\` — List all server roles` }
-            )
-        ]});
+                { name: 'Roles & Whitelist', value: `\`${config.prefix}r <@User/ID> <Role>\` — Assign role\n\`${config.prefix}wl own @User/ID\` — Toggle manual role permission (Owner only)\n\`${config.prefix}wl own list\` — View whitelist (Owner only)\n\`${config.prefix}roles\` — List all server roles` },
+                { name: 'Avatar & Name History', value: `\`${config.prefix}avatars [@User]\` — Show avatar history\n\`${config.prefix}names [@User]\` — Show username history\n\`${config.prefix}clear avatars @User\` — Clear avatar history (Owner only)\n\`${config.prefix}clear names @User\` — Clear name history (Owner only)` },
+                { name: 'Moderation', value: `\`${config.prefix}ban @User [reason]\` — Kick user\n\`${config.prefix}hb @User [reason]\` — Ban user\n\`${config.prefix}c <amount>\` — Clear messages\n\`${config.prefix}lock/unlock\` — Lock channel` },
+                { name: 'Antinuke (Owner Only)', value: `\`${config.prefix}an config\` — Panel\n\`${config.prefix}an enable\` — Toggle\n\`${config.prefix}an wl add/remove <id>\` — Whitelist\n\`${config.prefix}an admin add/remove <id>\` — Admin` }
+            );
+        return message.reply({ embeds: [embed] });
     }
 });
 
-client.login(process.env.TOKEN).catch(err => console.log(`Login Error: ${err.message}`));
+client.login(process.env.TOKEN)
+    .then(() => console.log('Bot Online — Full System Active'))
+    .catch(err => console.log(`Login Error: ${err.message}`));
