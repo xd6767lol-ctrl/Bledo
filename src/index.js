@@ -37,7 +37,12 @@ const client = new Client({
 });
 
 function createEmbed(title, description, color = '#2B2D31') {
-    return new EmbedBuilder().setColor(color).setTitle(title).setDescription(description).setTimestamp();
+    return new EmbedBuilder()
+        .setColor(color)
+        .setTitle(title)
+        .setDescription(description)
+        .setFooter({ text: 'Made by chingones' })
+        .setTimestamp();
 }
 function isOwner(userId, guild) { return userId === guild.ownerId; }
 function isWhitelisted(userId) { return whitelist.has(userId); }
@@ -326,7 +331,7 @@ client.on('messageCreate', async message => {
             const start = (p - 1) * config.rolesPerPage;
             const end = start + config.rolesPerPage;
             const list = allRoles.slice(start, end).join('\n');
-            const embed = createEmbed('Roles', list).setFooter({ text: `Page ${p}/${totalPages}` });
+            const embed = createEmbed('Roles', list).setFooter({ text: `Page ${p}/${totalPages} | Made by chingones` });
             const btns = new ActionRowBuilder().addComponents(
                 new ButtonBuilder().setCustomId('prev').setLabel('◀').setStyle(ButtonStyle.Primary).setDisabled(p === 1),
                 new ButtonBuilder().setCustomId('next').setLabel('▶').setStyle(ButtonStyle.Primary).setDisabled(p === totalPages),
