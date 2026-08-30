@@ -1,17 +1,12 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits, Partials, PermissionFlagsBits, AuditLogEvent, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, AttachmentBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, PermissionFlagsBits, AuditLogEvent, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType } = require('discord.js');
 const express = require('express');
-const { createCanvas, loadImage } = require('canvas');
-const fs = require('fs');
-const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// 🌐 Servidor Web — 24/7
 app.get('/', (req, res) => res.send('System Online — Bleed Style'));
 app.listen(PORT, '0.0.0.0', () => console.log(`Port ${PORT} — Service Running`));
 
-// ⚙️ CONFIGURACIÓN
 const config = {
     prefix: ',',
     rolesPerPage: 10,
@@ -25,7 +20,6 @@ const config = {
     voicemaster: { enabled: true, defaultLimit: 0, categoryName: 'Voice Channels' }
 };
 
-// 📦 ALMACENAMIENTO
 const voiceChannels = new Map();
 const antinukeCounters = new Map();
 const whitelist = new Set();
@@ -33,7 +27,6 @@ const antinukeAdmins = new Set();
 const avatarHistory = new Map();
 const nameHistory = new Map();
 
-// 🤖 CLIENTE
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages,
@@ -43,7 +36,6 @@ const client = new Client({
     partials: [Partials.Channel, Partials.Message, Partials.User, Partials.Reaction, Partials.GuildMember]
 });
 
-// 🛠️ UTILIDADES
 function createEmbed(title, description, color = '#2B2D31') {
     return new EmbedBuilder().setColor(color).setTitle(title).setDescription(description).setTimestamp();
 }
@@ -76,7 +68,6 @@ async function punish(guild, user, reason) {
     console.log(`[ANTINUKE] ${user.tag} — ${reason}`);
 }
 
-// 🧹 Limpieza automática cada hora
 setInterval(() => {
     const cutoff = Date.now() - (config.historyRetentionDays * 24 * 60 * 60 * 1000);
     for (const [userId, avatars] of avatarHistory) {
@@ -89,15 +80,10 @@ setInterval(() => {
     }
 }, 60 * 60 * 1000);
 
-// 📡 READY
 client.on('ready', () => {
     console.log(`Logged in as ${client.user.tag}`);
     client.user.setActivity({ type: 3, name: 'for unauthorized activity' });
 });
-
-// ==============================================
-// 📸 HISTORIAL DE AVATARES Y NOMBRES
-// ==============================================
 
 client.on('userUpdate', async (oldUser, newUser) => {
     if (oldUser.avatar !== newUser.avatar) {
@@ -105,8 +91,9 @@ client.on('userUpdate', async (oldUser, newUser) => {
         const history = avatarHistory.get(newUser.id);
         const cutoff = Date.now() - (config.historyRetentionDays * 24 * 60 * 60 * 1000);
         const lastEntry = history[history.length - 1];
-        if (!lastEntry || lastEntry.url !== newUser.displayAvatarURL({ size: 512 }) && Date.now() - lastEntry.timestamp > 5000) {
-            history.push({ url: newUser.displayAvatarURL({ size: 512 }), timestamp: Date.now() });
+        const newAvatarUrl = newUser.displayAvatarURL({ size: 512, dynamic: true });
+        if (!lastEntry || lastEntry.url !== newAvatarUrl && Date.now() - lastEntry.timestamp > 5000) {
+            history.push({ url: newAvatarUrl, timestamp: Date.now() });
             avatarHistory.set(newUser.id, history.filter(a => a.timestamp > cutoff));
         }
     }
@@ -121,31 +108,6 @@ client.on('userUpdate', async (oldUser, newUser) => {
         }
     }
 });
-
-// 🖼️ Collage de avatares
-async function generateAvatarCollage(user, avatars) {
-    const size = 128;
-    const perRow = 4;
-    const rows = Math.ceil(avatars.length / perRow);
-    const canvas = createCanvas(perRow * size, rows * size);
-    const ctx = canvas.getContext('2d');
-    for (let i = 0; i < avatars.length; i++) {
-        try {
-            const img = await loadImage(avatars[i].url);
-            const x = (i % perRow) * size;
-            const y = Math.floor(i / perRow) * size;
-            ctx.drawImage(img, x, y, size, size);
-            ctx.strokeStyle = '#2B2D31';
-            ctx.lineWidth = 2;
-            ctx.strokeRect(x, y, size, size);
-        } catch (e) {}
-    }
-    return canvas.toBuffer('image/png');
-}
-
-// ==============================================
-// 🛡️ ANTINUKE
-// ==============================================
 
 client.on('guildBanAdd', async ban => {
     if (!config.antinuke.enabled) return;
@@ -226,10 +188,6 @@ client.on('messageCreate', async message => {
     }
 });
 
-// ==============================================
-// 🎙️ VOICEMASTER
-// ==============================================
-
 client.on('voiceStateUpdate', async (oldState, newState) => {
     if (!config.voicemaster.enabled) return;
     const user = newState.member?.user;
@@ -252,17 +210,12 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     }
 });
 
-// ==============================================
-// ⌨️ COMANDOS — TODOS PUEDEN LIMPIAR AHORA
-// ==============================================
-
 client.on('messageCreate', async message => {
     if (message.author.bot || !message.guild) return;
     if (!message.content.startsWith(config.prefix)) return;
     const args = message.content.slice(config.prefix.length).trim().split(/ +/);
     const cmd = args.shift()?.toLowerCase();
 
-    // ========== 📸 AVATARES — TODOS PUEDEN VER Y LIMPIAR ==========
     if (cmd === 'avatars') {
         const targetId = args[0]?.replace(/[<@!>]/g, '') || message.author.id;
         const target = await client.users.fetch(targetId).catch(() => null);
@@ -271,13 +224,20 @@ client.on('messageCreate', async message => {
         if (history.length === 0) {
             return message.reply({ embeds: [createEmbed('Avatar History', `No avatar changes recorded for <@${targetId}> in the last ${config.historyRetentionDays} days.`)] });
         }
-        const buffer = await generateAvatarCollage(target, history);
-        const attachment = new AttachmentBuilder(buffer, { name: 'avatars.png' });
-        const embed = createEmbed('Avatar History', `**User:** <@${targetId}>\n**Changes in last ${config.historyRetentionDays} days:** ${history.length}`).setImage('attachment://avatars.png');
-        return message.reply({ embeds: [embed], files: [attachment] });
+        const embed = createEmbed('Avatar History', `**User:** <@${targetId}>\n**Changes in last ${config.historyRetentionDays} days:** ${history.length}`);
+        if (history.length === 1) {
+            embed.setImage(history[0].url);
+        } else {
+            embed.setImage(history[history.length - 1].url);
+            const listText = history.map((entry, i) => {
+                const date = new Date(entry.timestamp).toLocaleDateString('es-MX');
+                return `\`${i + 1}.\` — ${date}`;
+            }).join('\n');
+            embed.setDescription(`**User:** <@${targetId}>\n**Total changes:** ${history.length}\n\n**History:**\n${listText}\n\n*Latest avatar shown above*`);
+        }
+        return message.reply({ embeds: [embed] });
     }
 
-    // ========== 🏷️ NOMBRES — TODOS PUEDEN VER ==========
     if (cmd === 'names') {
         const targetId = args[0]?.replace(/[<@!>]/g, '') || message.author.id;
         const target = await client.users.fetch(targetId).catch(() => null);
@@ -293,7 +253,6 @@ client.on('messageCreate', async message => {
         return message.reply({ embeds: [createEmbed('Username History', `**User:** <@${targetId}>\n**Changes in last ${config.historyRetentionDays} days:** ${history.length}\n\n${nameList}`)] });
     }
 
-    // ========== 🧹 CLEAR AVATARS — TODOS PUEDEN USARLO ✅ ==========
     if (cmd === 'clear' && args[0]?.toLowerCase() === 'avatars') {
         const targetId = args[1]?.replace(/[<@!>]/g, '');
         if (!targetId) return message.reply({ embeds: [createEmbed('Usage', `\`${config.prefix}clear avatars @User\``)] });
@@ -301,7 +260,6 @@ client.on('messageCreate', async message => {
         return message.reply({ embeds: [createEmbed('History Cleared', `Avatar history cleared for <@${targetId}>.`, '#57F287')] });
     }
 
-    // ========== 🧹 CLEAR NAMES — TODOS PUEDEN USARLO ✅ ==========
     if (cmd === 'clear' && args[0]?.toLowerCase() === 'names') {
         const targetId = args[1]?.replace(/[<@!>]/g, '');
         if (!targetId) return message.reply({ embeds: [createEmbed('Usage', `\`${config.prefix}clear names @User\``)] });
@@ -309,7 +267,6 @@ client.on('messageCreate', async message => {
         return message.reply({ embeds: [createEmbed('History Cleared', `Username history cleared for <@${targetId}>.`, '#57F287')] });
     }
 
-    // ========== 🔧 ANTINUKE CONFIG — SOLO DUEÑO ==========
     if ((cmd === 'an' || cmd === 'antinuke') && args[0]?.toLowerCase() === 'config') {
         if (!isOwner(message.author.id, message.guild)) {
             return message.reply({ embeds: [createEmbed('Access Denied', 'Only the server owner can configure antinuke.', '#ED4245')] });
@@ -353,7 +310,6 @@ client.on('messageCreate', async message => {
         if (action === 'remove') { antinukeAdmins.delete(userId); return message.reply({ embeds: [createEmbed('Admin Updated', `<@${userId}> is no longer an antinuke admin.`, '#FEE75C')] }); }
     }
 
-    // ========== 🎙️ VOICEMASTER ==========
     if (cmd === 'vc' && args[0]?.toLowerCase() === 'master') {
         if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return message.reply({ embeds: [createEmbed('Access Denied', 'Insufficient permissions.', '#ED4245')] });
         const existing = message.guild.channels.cache.find(c => c.name.toLowerCase() === 'panel' && c.type === ChannelType.GuildVoice);
@@ -362,7 +318,6 @@ client.on('messageCreate', async message => {
         return message.reply({ embeds: [createEmbed('VoiceMaster', `Panel created: <#${panel.id}>`, '#57F287')] });
     }
 
-    // ========== 🎭 ROLES ==========
     if (cmd === 'roles') {
         const allRoles = message.guild.roles.cache.filter(r => r.id !== message.guild.id).sort((a, b) => b.position - a.position).map(r => `@${r.name} (${r.id})`);
         const totalPages = Math.ceil(allRoles.length / config.rolesPerPage);
@@ -391,7 +346,6 @@ client.on('messageCreate', async message => {
         return;
     }
 
-    // ========== 🔨 MODERACIÓN ==========
     if (cmd === 'clear' || cmd === 'c') {
         if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return message.reply({ embeds: [createEmbed('Access Denied', 'Insufficient permissions.', '#ED4245')] });
         const amount = parseInt(args[0]) || 5;
@@ -401,14 +355,37 @@ client.on('messageCreate', async message => {
         return message.reply({ embeds: [createEmbed('Messages Cleared', `${messages?.size || 0} messages deleted.`, '#57F287')] });
     }
 
-    if (cmd === 'ban' || cmd === 'hb') {
-        if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return message.reply({ embeds: [createEmbed('Access Denied', 'Insufficient permissions.', '#ED4245')] });
+    if (cmd === 'ban') {
+        if (!message.member.permissions.has(PermissionFlagsBits.KickMembers)) return message.reply({ embeds: [createEmbed('Access Denied', 'Insufficient permissions — Need Kick Members.', '#ED4245')] });
         const targetId = args[0]?.replace(/[<@!>]/g, '');
-        if (!targetId) return message.reply({ embeds: [createEmbed('Usage', `\`${config.prefix}ban @User [reason]\``)] });
+        if (!targetId) return message.reply({ embeds: [createEmbed('Usage', `\`${config.prefix}ban @User [reason]\` — Kick user from server`)] });
         const member = await message.guild.members.fetch(targetId).catch(() => null);
         if (!member) return message.reply({ embeds: [createEmbed('Error', 'User not found.', '#ED4245')] });
-        await member.ban({ reason: args.slice(1).join(' ') || 'No reason' });
-        return message.reply({ embeds: [createEmbed('User Banned', `<@${targetId}> has been banned.`, '#ED4245')] });
+        if (member.permissions.has(PermissionFlagsBits.Administrator) || member.id === message.guild.ownerId) {
+            return message.reply({ embeds: [createEmbed('Error', 'Cannot kick this user.', '#ED4245')] });
+        }
+        const reason = args.slice(1).join(' ') || 'No reason';
+        await member.kick(reason).catch(err => {
+            return message.reply({ embeds: [createEmbed('Error', `Failed to kick: ${err.message}`, '#ED4245')] });
+        });
+        return message.reply({ embeds: [createEmbed('User Kicked', `<@${targetId}> has been kicked from the server.\nReason: ${reason}`, '#FEE75C')] });
+    }
+
+    if (cmd === 'hb') {
+        if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return message.reply({ embeds: [createEmbed('Access Denied', 'Insufficient permissions — Need Ban Members.', '#ED4245')] });
+        const targetId = args[0]?.replace(/[<@!>]/g, '');
+        if (!targetId) return message.reply({ embeds: [createEmbed('Usage', `\`${config.prefix}hb @User [reason]\` — Ban user from server`)] });
+        const member = await message.guild.members.fetch(targetId).catch(() => null);
+        if (member) {
+            if (member.permissions.has(PermissionFlagsBits.Administrator) || member.id === message.guild.ownerId) {
+                return message.reply({ embeds: [createEmbed('Error', 'Cannot ban this user.', '#ED4245')] });
+            }
+        }
+        const reason = args.slice(1).join(' ') || 'No reason';
+        await message.guild.members.ban(targetId, { reason }).catch(err => {
+            return message.reply({ embeds: [createEmbed('Error', `Failed to ban: ${err.message}`, '#ED4245')] });
+        });
+        return message.reply({ embeds: [createEmbed('User Banned', `<@${targetId}> has been banned from the server.\nReason: ${reason}`, '#ED4245')] });
     }
 
     if (cmd === 'lock') {
@@ -423,19 +400,17 @@ client.on('messageCreate', async message => {
         return message.reply({ embeds: [createEmbed('Channel Unlocked', 'This channel has been unlocked.', '#57F287')] });
     }
 
-    // ========== 📋 HELP ==========
     if (cmd === 'help' || cmd === 'cmd') {
         const embed = createEmbed('Commands', `Prefix: \`${config.prefix}\``)
             .addFields(
-                { name: 'Avatar & Name History', value: `\`${config.prefix}avatars [@User]\` — Show avatar collage\n\`${config.prefix}names [@User]\` — Show username history\n\`${config.prefix}clear avatars @User\` — Clear avatar history ✅ (Anyone)\n\`${config.prefix}clear names @User\` — Clear name history ✅ (Anyone)` },
-                { name: 'Antinuke (Owner Only 👑)', value: `\`${config.prefix}an config\` — Panel\n\`${config.prefix}an enable\` — Toggle\n\`${config.prefix}an wl add/remove <id>\` — Whitelist` },
-                { name: 'Moderation', value: `\`${config.prefix}c <amount>\` — Clear messages\n\`${config.prefix}ban @User\` — Ban\n\`${config.prefix}lock/unlock\` — Channel lock` }
+                { name: 'Avatar & Name History', value: `\`${config.prefix}avatars [@User]\` — Show avatar history\n\`${config.prefix}names [@User]\` — Show username history\n\`${config.prefix}clear avatars @User\` — Clear avatar history\n\`${config.prefix}clear names @User\` — Clear name history` },
+                { name: 'Moderation', value: `\`${config.prefix}ban @User [reason]\` — Kick user from server\n\`${config.prefix}hb @User [reason]\` — Ban user from server\n\`${config.prefix}c <amount>\` — Clear messages\n\`${config.prefix}lock/unlock\` — Channel lock` },
+                { name: 'Antinuke (Owner Only)', value: `\`${config.prefix}an config\` — Panel\n\`${config.prefix}an enable\` — Toggle\n\`${config.prefix}an wl add/remove <id>\` — Whitelist` }
             );
         return message.reply({ embeds: [embed] });
     }
 });
 
-// 🔑 INICIAR BOT
 client.login(process.env.TOKEN)
     .then(() => console.log('Bot Online — Full System Active'))
     .catch(err => console.log(`Login Error: ${err.message}`));
