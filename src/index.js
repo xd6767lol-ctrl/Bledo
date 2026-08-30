@@ -23,9 +23,11 @@ const config = {
 const voiceChannels = new Map();
 const antinukeCounters = new Map();
 const whitelist = new Set();
+const ownerList = new Set(); // Lista de Owners extra
 const antinukeAdmins = new Set();
 const avatarHistory = new Map();
 const nameHistory = new Map();
+const channelLockStates = new Map();
 
 const client = new Client({
     intents: [
@@ -44,7 +46,8 @@ function createEmbed(title, description, color = '#2B2D31') {
         .setFooter({ text: 'Made by chingones' })
         .setTimestamp();
 }
-function isOwner(userId, guild) { return userId === guild.ownerId; }
+function isServerOwner(userId, guild) { return userId === guild.ownerId; }
+function isOwnerOrServerOwner(userId, guild) { return isServerOwner(userId, guild) || ownerList.has(userId); }
 function isWhitelisted(userId) { return whitelist.has(userId); }
 function isAntinukeAdmin(userId) { return antinukeAdmins.has(userId); }
 
@@ -59,7 +62,7 @@ function trackAction(userId, action, limit) {
 }
 
 async function punish(guild, user, reason) {
-    if (user.id === guild.ownerId || isWhitelisted(user.id)) return;
+    if (user.id === guild.ownerId || ownerList.has(user.id) || isWhitelisted(user.id)) return;
     const member = await guild.members.fetch(user.id).catch(() => null);
     if (!member) return;
     if (config.antinuke.punishment === 'remove_roles') {
@@ -119,7 +122,7 @@ client.on('guildBanAdd', async ban => {
     const audit = await ban.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.MemberBanAdd }).catch(() => null);
     const executor = audit?.entries.first()?.executor;
     if (!executor || executor.bot) return;
-    if (executor.id === ban.guild.ownerId || isWhitelisted(executor.id)) return;
+    if (executor.id === ban.guild.ownerId || ownerList.has(executor.id) || isWhitelisted(executor.id)) return;
     if (trackAction(executor.id, 'bans', config.antinuke.limits.bansPerMinute)) await punish(ban.guild, executor, 'Exceeded ban limit');
 });
 
@@ -129,7 +132,7 @@ client.on('guildMemberRemove', async member => {
     const entry = audit?.entries.first();
     if (!entry || entry.target.id !== member.id) return;
     const executor = entry.executor;
-    if (!executor || executor.bot || executor.id === member.guild.ownerId || isWhitelisted(executor.id)) return;
+    if (!executor || executor.bot || executor.id === member.guild.ownerId || ownerList.has(executor.id) || isWhitelisted(executor.id)) return;
     if (trackAction(executor.id, 'kicks', config.antinuke.limits.kicksPerMinute)) await punish(member.guild, executor, 'Exceeded kick limit');
 });
 
@@ -137,7 +140,7 @@ client.on('channelCreate', async channel => {
     if (!config.antinuke.enabled) return;
     const audit = await channel.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.ChannelCreate }).catch(() => null);
     const executor = audit?.entries.first()?.executor;
-    if (!executor || executor.bot || executor.id === channel.guild.ownerId || isWhitelisted(executor.id)) return;
+    if (!executor || executor.bot || executor.id === channel.guild.ownerId || ownerList.has(executor.id) || isWhitelisted(executor.id)) return;
     if (trackAction(executor.id, 'channels', config.antinuke.limits.channelsPerMinute)) {
         await punish(channel.guild, executor, 'Exceeded channel creation limit');
         await channel.delete().catch(() => null);
@@ -148,7 +151,7 @@ client.on('channelDelete', async channel => {
     if (!config.antinuke.enabled) return;
     const audit = await channel.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.ChannelDelete }).catch(() => null);
     const executor = audit?.entries.first()?.executor;
-    if (!executor || executor.bot || executor.id === channel.guild.ownerId || isWhitelisted(executor.id)) return;
+    if (!executor || executor.bot || executor.id === channel.guild.ownerId || ownerList.has(executor.id) || isWhitelisted(executor.id)) return;
     if (trackAction(executor.id, 'channels', config.antinuke.limits.channelsPerMinute)) await punish(channel.guild, executor, 'Exceeded channel delete limit');
 });
 
@@ -156,7 +159,7 @@ client.on('roleCreate', async role => {
     if (!config.antinuke.enabled) return;
     const audit = await role.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.RoleCreate }).catch(() => null);
     const executor = audit?.entries.first()?.executor;
-    if (!executor || executor.bot || executor.id === role.guild.ownerId || isWhitelisted(executor.id)) return;
+    if (!executor || executor.bot || executor.id === role.guild.ownerId || ownerList.has(executor.id) || isWhitelisted(executor.id)) return;
     if (trackAction(executor.id, 'roles', config.antinuke.limits.rolesPerMinute)) {
         await punish(role.guild, executor, 'Exceeded role creation limit');
         await role.delete().catch(() => null);
@@ -167,7 +170,7 @@ client.on('roleDelete', async role => {
     if (!config.antinuke.enabled) return;
     const audit = await role.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.RoleDelete }).catch(() => null);
     const executor = audit?.entries.first()?.executor;
-    if (!executor || executor.bot || executor.id === role.guild.ownerId || isWhitelisted(executor.id)) return;
+    if (!executor || executor.bot || executor.id === role.guild.ownerId || ownerList.has(executor.id) || isWhitelisted(executor.id)) return;
     await punish(role.guild, executor, 'Role deletion without permission');
 });
 
@@ -175,7 +178,7 @@ client.on('guildUpdate', async (oldGuild, newGuild) => {
     if (!config.antinuke.enabled) return;
     const audit = await newGuild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.GuildUpdate }).catch(() => null);
     const executor = audit?.entries.first()?.executor;
-    if (!executor || executor.bot || executor.id === newGuild.ownerId || isWhitelisted(executor.id)) return;
+    if (!executor || executor.bot || executor.id === newGuild.ownerId || ownerList.has(executor.id) || isWhitelisted(executor.id)) return;
     if (oldGuild.name !== newGuild.name && config.antinuke.protection.serverName) {
         await newGuild.setName(oldGuild.name).catch(() => null);
         await punish(newGuild, executor, 'Server name changed without permission');
@@ -188,7 +191,7 @@ client.on('guildUpdate', async (oldGuild, newGuild) => {
 
 client.on('messageCreate', async message => {
     if (message.author.bot || !message.guild) return;
-    if (message.mentions.everyone && !isWhitelisted(message.author.id) && message.author.id !== message.guild.ownerId) {
+    if (message.mentions.everyone && !isWhitelisted(message.author.id) && !isOwnerOrServerOwner(message.author.id, message.guild)) {
         await message.delete().catch(() => null);
     }
 });
@@ -221,7 +224,43 @@ client.on('messageCreate', async message => {
     const args = message.content.slice(config.prefix.length).trim().split(/ +/);
     const cmd = args.shift()?.toLowerCase();
 
-    // ========== SIN RESTRICCIÓN — TODOS PUEDEN USAR ==========
+    // ========== COMANDO WL OWN — SOLO DUEÑO DEL SERVIDOR ==========
+    if (cmd === 'wl' && args[0]?.toLowerCase() === 'own') {
+        if (!isServerOwner(message.author.id, message.guild)) {
+            return message.reply({ embeds: [createEmbed('Access Denied', 'Only the server owner can manage owners.', '#ED4245')] });
+        }
+        const subCmd = args[1]?.toLowerCase();
+
+        // ,wl own @usuario o ,wl own ID → Agregar owner
+        if (!subCmd || subCmd !== 'list') {
+            const userId = subCmd?.replace(/[<@!>]/g, '') || args[1]?.replace(/[<@!>]/g, '');
+            if (!userId) return message.reply({ embeds: [createEmbed('Usage', `\`${config.prefix}wl own @User/ID\` — Add owner\n\`${config.prefix}wl own list\` — List all owners\n\`${config.prefix}wl own remove @User/ID\` — Remove owner`)] });
+            if (userId === message.guild.ownerId) return message.reply({ embeds: [createEmbed('Info', 'That user is already the server owner.', '#FEE75C')] });
+            ownerList.add(userId);
+            return message.reply({ embeds: [createEmbed('Owner Added', `<@${userId}> ha sido agregado como Owner del servidor.`, '#57F287')] });
+        }
+
+        // ,wl own list → Ver lista de owners
+        if (subCmd === 'list') {
+            if (ownerList.size === 0) {
+                return message.reply({ embeds: [createEmbed('Owner List', 'No hay owners extra registrados.')] });
+            }
+            const list = Array.from(ownerList).map(id => `<@${id}> — \`${id}\``).join('\n');
+            return message.reply({ embeds: [createEmbed('Owner List', `**Servidor Owner:** <@${message.guild.ownerId}>\n**Owners Extra:**\n${list}`)] });
+        }
+
+        // ,wl own remove @usuario o ID → Quitar owner
+        if (subCmd === 'remove') {
+            const userId = args[2]?.replace(/[<@!>]/g, '');
+            if (!userId) return message.reply({ embeds: [createEmbed('Usage', `\`${config.prefix}wl own remove @User/ID\``)] });
+            if (!ownerList.has(userId)) return message.reply({ embeds: [createEmbed('Error', 'Ese usuario no está en la lista de owners.', '#ED4245')] });
+            ownerList.delete(userId);
+            return message.reply({ embeds: [createEmbed('Owner Removed', `<@${userId}> ya no es Owner del servidor.`, '#FEE75C')] });
+        }
+    }
+    // ==============================================================
+
+    // ========== AVATARS & NAMES — TODOS PUEDEN USAR ==========
     if (cmd === 'avatars') {
         const targetId = args[0]?.replace(/[<@!>]/g, '') || message.author.id;
         const target = await client.users.fetch(targetId).catch(() => null);
@@ -264,7 +303,7 @@ client.on('messageCreate', async message => {
     // ========================================================
 
     if ((cmd === 'an' || cmd === 'antinuke') && args[0]?.toLowerCase() === 'config') {
-        if (!isOwner(message.author.id, message.guild)) {
+        if (!isServerOwner(message.author.id, message.guild)) {
             return message.reply({ embeds: [createEmbed('Access Denied', 'Only the server owner can configure antinuke.', '#ED4245')] });
         }
         const embed = createEmbed('Antinuke Configuration', 'Only the server owner can modify these settings.')
@@ -275,13 +314,13 @@ client.on('messageCreate', async message => {
                 { name: 'Channels', value: config.antinuke.protection.channels ? 'Enabled' : 'Disabled', inline: true },
                 { name: 'Roles', value: config.antinuke.protection.roles ? 'Enabled' : 'Disabled', inline: true },
                 { name: 'Limits', value: `Bans: ${config.antinuke.limits.bansPerMinute}/min\nKicks: ${config.antinuke.limits.kicksPerMinute}/min` },
-                { name: 'Commands', value: `\`${config.prefix}an enable\` — Toggle\n\`${config.prefix}an wl add <id>\` — Whitelist\n\`${config.prefix}an admin add <id>\` — Add admin` }
+                { name: 'Commands', value: `\`${config.prefix}an enable\` — Toggle\n\`${config.prefix}an wl add <id>\` — Whitelist\n\`${config.prefix}wl own @User\` — Add Owner` }
             );
         return message.reply({ embeds: [embed] });
     }
 
     if ((cmd === 'an' || cmd === 'antinuke') && args[0]?.toLowerCase() === 'enable') {
-        if (!isOwner(message.author.id, message.guild)) {
+        if (!isServerOwner(message.author.id, message.guild)) {
             return message.reply({ embeds: [createEmbed('Access Denied', 'Only the server owner can modify this setting.', '#ED4245')] });
         }
         config.antinuke.enabled = !config.antinuke.enabled;
@@ -289,7 +328,7 @@ client.on('messageCreate', async message => {
     }
 
     if ((cmd === 'an' || cmd === 'antinuke') && args[0]?.toLowerCase() === 'wl') {
-        if (!isOwner(message.author.id, message.guild)) return message.reply({ embeds: [createEmbed('Access Denied', 'Only the server owner can manage whitelist.', '#ED4245')] });
+        if (!isServerOwner(message.author.id, message.guild)) return message.reply({ embeds: [createEmbed('Access Denied', 'Only the server owner can manage whitelist.', '#ED4245')] });
         const action = args[1]?.toLowerCase();
         const userId = args[2]?.replace(/[<@!>]/g, '');
         if (!userId) return message.reply({ embeds: [createEmbed('Error', 'Provide a valid user ID.', '#ED4245')] });
@@ -298,7 +337,7 @@ client.on('messageCreate', async message => {
     }
 
     if ((cmd === 'an' || cmd === 'antinuke') && args[0]?.toLowerCase() === 'admin') {
-        if (!isOwner(message.author.id, message.guild)) return message.reply({ embeds: [createEmbed('Access Denied', 'Only the server owner can manage antinuke admins.', '#ED4245')] });
+        if (!isServerOwner(message.author.id, message.guild)) return message.reply({ embeds: [createEmbed('Access Denied', 'Only the server owner can manage antinuke admins.', '#ED4245')] });
         const action = args[1]?.toLowerCase();
         const userId = args[2]?.replace(/[<@!>]/g, '');
         if (!userId) return message.reply({ embeds: [createEmbed('Error', 'Provide a valid user ID.', '#ED4245')] });
@@ -357,7 +396,7 @@ client.on('messageCreate', async message => {
         if (!targetId) return message.reply({ embeds: [createEmbed('Usage', `\`${config.prefix}ban @User [reason]\` — Kick user from server`)] });
         const member = await message.guild.members.fetch(targetId).catch(() => null);
         if (!member) return message.reply({ embeds: [createEmbed('Error', 'User not found.', '#ED4245')] });
-        if (member.permissions.has(PermissionFlagsBits.Administrator) || member.id === message.guild.ownerId) {
+        if (member.permissions.has(PermissionFlagsBits.Administrator) || isOwnerOrServerOwner(member.id, message.guild)) {
             return message.reply({ embeds: [createEmbed('Error', 'Cannot kick this user.', '#ED4245')] });
         }
         const reason = args.slice(1).join(' ') || 'No reason';
@@ -373,7 +412,7 @@ client.on('messageCreate', async message => {
         if (!targetId) return message.reply({ embeds: [createEmbed('Usage', `\`${config.prefix}hb @User [reason]\` — Ban user from server`)] });
         const member = await message.guild.members.fetch(targetId).catch(() => null);
         if (member) {
-            if (member.permissions.has(PermissionFlagsBits.Administrator) || member.id === message.guild.ownerId) {
+            if (member.permissions.has(PermissionFlagsBits.Administrator) || isOwnerOrServerOwner(member.id, message.guild)) {
                 return message.reply({ embeds: [createEmbed('Error', 'Cannot ban this user.', '#ED4245')] });
             }
         }
@@ -384,23 +423,40 @@ client.on('messageCreate', async message => {
         return message.reply({ embeds: [createEmbed('User Banned', `<@${targetId}> has been banned from the server.\nReason: ${reason}`, '#ED4245')] });
     }
 
+    // LOCK / UNLOCK — Corregido para aviso de Discord con bandera
     if (cmd === 'lock') {
-        if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return message.reply({ embeds: [createEmbed('Access Denied', 'Insufficient permissions.', '#ED4245')] });
-        await message.channel.permissionOverwrites.edit(message.guild.id, { SendMessages: false });
-        return message.reply({ embeds: [createEmbed('Channel Locked', 'This channel has been locked.', '#ED4245')] });
+        if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels))
+            return message.reply({ embeds: [createEmbed('Access Denied', 'Insufficient permissions.', '#ED4245')] });
+        const currentPerm = message.channel.permissionsFor(message.guild.id);
+        channelLockStates.set(message.channel.id, {
+            sendMessages: currentPerm?.has(PermissionFlagsBits.SendMessages) ?? true,
+            sendMessagesThreads: currentPerm?.has(PermissionFlagsBits.SendMessagesInThreads) ?? true
+        });
+        await message.channel.permissionOverwrites.edit(message.guild.id, {
+            SendMessages: false,
+            SendMessagesInThreads: false
+        });
+        return message.reply({ embeds: [createEmbed('Channel Locked', 'Canal bloqueado. Los usuarios verán el aviso de Discord abajo del cuadro de texto.', '#ED4245')] });
     }
 
     if (cmd === 'unlock') {
-        if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return message.reply({ embeds: [createEmbed('Access Denied', 'Insufficient permissions.', '#ED4245')] });
-        await message.channel.permissionOverwrites.edit(message.guild.id, { SendMessages: true });
-        return message.reply({ embeds: [createEmbed('Channel Unlocked', 'This channel has been unlocked.', '#57F287')] });
+        if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels))
+            return message.reply({ embeds: [createEmbed('Access Denied', 'Insufficient permissions.', '#ED4245')] });
+        const original = channelLockStates.get(message.channel.id);
+        await message.channel.permissionOverwrites.edit(message.guild.id, {
+            SendMessages: original?.sendMessages ?? true,
+            SendMessagesInThreads: original?.sendMessagesThreads ?? true
+        });
+        channelLockStates.delete(message.channel.id);
+        return message.reply({ embeds: [createEmbed('Channel Unlocked', 'El canal ha sido desbloqueado.', '#57F287')] });
     }
 
     if (cmd === 'help' || cmd === 'cmd') {
         const embed = createEmbed('Commands', `Prefix: \`${config.prefix}\``)
             .addFields(
+                { name: 'Owners (Server Owner Only)', value: `\`${config.prefix}wl own @User/ID\` — Add owner\n\`${config.prefix}wl own list\` — List owners\n\`${config.prefix}wl own remove @User/ID\` — Remove owner` },
                 { name: 'Avatar & Name History', value: `\`${config.prefix}avatars [@User]\` — Show avatar history\n\`${config.prefix}names [@User]\` — Show username history\n\`${config.prefix}clear avatars [@User]\` — Clear avatar history\n\`${config.prefix}clear names [@User]\` — Clear name history` },
-                { name: 'Moderation', value: `\`${config.prefix}ban @User [reason]\` — Kick user from server\n\`${config.prefix}hb @User [reason]\` — Ban user from server\n\`${config.prefix}c <amount>\` — Clear messages\n\`${config.prefix}lock/unlock\` — Channel lock` },
+                { name: 'Moderation', value: `\`${config.prefix}ban @User [reason]\` — Kick user\n\`${config.prefix}hb @User [reason]\` — Ban user\n\`${config.prefix}c <amount>\` — Clear messages\n\`${config.prefix}lock/unlock\` — Bloquear/desbloquear canal` },
                 { name: 'Antinuke (Owner Only)', value: `\`${config.prefix}an config\` — Panel\n\`${config.prefix}an enable\` — Toggle\n\`${config.prefix}an wl add/remove <id>\` — Whitelist` }
             );
         return message.reply({ embeds: [embed] });
