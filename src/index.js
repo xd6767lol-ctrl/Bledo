@@ -236,18 +236,22 @@ cliente.on('messageCreate', async mensaje => {
     const servidor = mensaje.guild;
     const roles = await obtenerRolesPorNivel(servidor);
 
-    if (comando === 'ayuda' || comando === 'cmd' || comando === 'comandos') {
+    // ========== COMANDO HELP / AYUDA ==========
+    if (comando === 'help' || comando === 'ayuda' || comando === 'cmd' || comando === 'comandos') {
         const embed = crearEmbed('Lista de Comandos', `Prefijo: \`${config.prefijo}\``)
             .addFields(
-                { name: 'Lista Blanca (Solo Dueno)', value: `\`${config.prefijo}wl own @Usuario/ID\` — Agregar Dueno\n\`${config.prefijo}wl own lista\` — Ver Duenos\n\`${config.prefijo}wl own quitar @Usuario/ID\` — Quitar Dueno\n\`${config.prefijo}wl r2 agregar @Usuario/ID\` — Dar permiso Rol2 (SOLO DUENOS)\n\`${config.prefijo}wl r2 quitar @Usuario/ID\` — Quitar permiso Rol2 (SOLO DUENOS)\n\`${config.prefijo}wl r2 lista\` — Ver lista Rol2\n\`${config.prefijo}an wl agregar/quitar <ID>\` — Lista Blanca Antinuke\n\`${config.prefijo}an admin agregar/quitar <ID>\` — Admin Antinuke` },
-                { name: 'Roles', value: `\`${config.prefijo}r @Usuario NombreRol\` — Dar Rol\n\`${config.prefijo}roles\` — Lista de Roles\nRol1: ${roles.rol1?.nombre || 'No detectado'}\nRol2 (Protegido): ${roles.rol2?.nombre || 'No detectado'}\nRol3: ${roles.rol3?.nombre || 'No detectado'}\nRol4: ${roles.rol4?.nombre || 'No detectado'}` },
-                { name: 'Historial', value: `\`${config.prefijo}avatares [@Usuario]\` — Historial de Avatares\n\`${config.prefijo}nombres [@Usuario]\` — Historial de Nombres\n\`${config.prefijo}limpiar avatares [@Usuario]\` — Borrar Avatares\n\`${config.prefijo}limpiar nombres [@Usuario]\` — Borrar Nombres` },
-                { name: 'Moderacion', value: `\`${config.prefijo}bloquear\` — Bloquear Canal\n\`${config.prefijo}desbloquear\` — Desbloquear Canal\n\`${config.prefijo}c <cantidad>\` — Borrar Mensajes\n\`${config.prefijo}ban @Usuario [razon]\` — Expulsar\n\`${config.prefijo}hb @Usuario [razon]\` — Banear` },
-                { name: 'Antinuke', value: `\`${config.prefijo}an config\` — Configuracion\n\`${config.prefijo}an activar/desactivar\` — Activar/Desactivar\n\`${config.prefijo}vc master\` — Crear Canal de Voz Automatico` }
+                { name: 'Lista Blanca Duenos (Solo Dueno)', value: `\`${config.prefijo}wl own @Usuario/ID\` — Agregar Dueno\n\`${config.prefijo}wl own lista\` — Ver Duenos\n\`${config.prefijo}wl own quitar @Usuario/ID\` — Quitar Dueno` },
+                { name: 'Lista Blanca Rol2 (Solo Duenos)', value: `\`${config.prefijo}wl r2 agregar @Usuario/ID\` — Dar permiso para dar Rol2\n\`${config.prefijo}wl r2 quitar @Usuario/ID\` — Quitar permiso\n\`${config.prefijo}wl r2 lista\` — Ver lista con permiso` },
+                { name: 'Sistema de Roles', value: `\`${config.prefijo}r @Usuario NombreRol\` — Dar Rol\n\`${config.prefijo}roles\` — Lista de Roles del Servidor\nRol1: ${roles.rol1?.nombre || 'No detectado'}\nRol2 (Protegido): ${roles.rol2?.nombre || 'No detectado'}\nRol3: ${roles.rol3?.nombre || 'No detectado'}\nRol4: ${roles.rol4?.nombre || 'No detectado'}` },
+                { name: 'Historial de Usuarios', value: `\`${config.prefijo}avatares [@Usuario]\` — Ver historial de avatares\n\`${config.prefijo}nombres [@Usuario]\` — Ver historial de nombres\n\`${config.prefijo}limpiar avatares [@Usuario]\` — Borrar historial de avatares\n\`${config.prefijo}limpiar nombres [@Usuario]\` — Borrar historial de nombres` },
+                { name: 'Antinuke y Seguridad (Solo Dueno)', value: `\`${config.prefijo}an config\` — Ver configuracion de Antinuke\n\`${config.prefijo}an activar/desactivar\` — Encender/Apagar proteccion\n\`${config.prefijo}an wl agregar/quitar <ID>\` — Lista Blanca Antinuke\n\`${config.prefijo}an admin agregar/quitar <ID>\` — Administrador Antinuke` },
+                { name: 'Moderacion', value: `\`${config.prefijo}bloquear\` — Bloquear canal actual\n\`${config.prefijo}desbloquear\` — Desbloquear canal\n\`${config.prefijo}c <cantidad>\` — Borrar mensajes (1-100)\n\`${config.prefijo}ban @Usuario [razon]\` — Expulsar del servidor\n\`${config.prefijo}hb @Usuario [razon]\` — Banear permanentemente` },
+                { name: 'Canales de Voz', value: `\`${config.prefijo}vc master\` — Crear panel Voice Create` }
             );
         return mensaje.reply({ embeds: [embed] });
     }
 
+    // ========== WL OWN ==========
     if (comando === 'wl' && argumentos[0]?.toLowerCase() === 'own') {
         if (!esDueñoServidor(mensaje.author.id, servidor)) {
             return mensaje.reply({ embeds: [crearEmbed('Acceso Denegado', 'Solo el dueno del servidor puede gestionar esto.', '#ED4245')] });
@@ -274,9 +278,10 @@ cliente.on('messageCreate', async mensaje => {
         }
     }
 
+    // ========== WL R2 (SOLO DUENOS PUEDEN GESTIONAR) ==========
     if (comando === 'wl' && argumentos[0]?.toLowerCase() === 'r2') {
-        if (!esDueñoOListaBlanca(mensaje.author.id, servidor)) {
-            return mensaje.reply({ embeds: [crearEmbed('Acceso Denegado', 'Solo los Duenos pueden gestionar la lista blanca de Rol2.', '#ED4245')] });
+        if (!esDueñoServidor(mensaje.author.id, servidor)) {
+            return mensaje.reply({ embeds: [crearEmbed('Acceso Denegado', 'Solo el dueno del servidor puede gestionar la lista blanca de Rol2.', '#ED4245')] });
         }
         const accion = argumentos[1]?.toLowerCase();
         if (accion === 'agregar') {
@@ -299,6 +304,7 @@ cliente.on('messageCreate', async mensaje => {
         return mensaje.reply({ embeds: [crearEmbed('Uso', `\`${config.prefijo}wl r2 agregar @Usuario/ID\` — Dar permiso\n\`${config.prefijo}wl r2 quitar @Usuario/ID\` — Quitar permiso\n\`${config.prefijo}wl r2 lista\` — Ver lista`)] });
     }
 
+    // ========== DAR ROL ==========
     if (comando === 'r') {
         const mencion = mensaje.mentions.members.first();
         const nombreRol = argumentos.slice(1).join(' ');
@@ -316,6 +322,7 @@ cliente.on('messageCreate', async mensaje => {
         return mensaje.reply({ embeds: [crearEmbed('Rol Asignado', `${mencion.user.tag} recibio el rol **${rol.name}**.`, '#57F287')] });
     }
 
+    // ========== VER ROLES ==========
     if (comando === 'roles') {
         const todosRoles = servidor.roles.cache
             .filter(r => r.id !== servidor.id)
@@ -330,6 +337,7 @@ cliente.on('messageCreate', async mensaje => {
         return mensaje.reply({ embeds: [crearEmbed('Lista de Roles', todosRoles + infoRoles)] });
     }
 
+    // ========== HISTORIAL AVATARES ==========
     if (comando === 'avatars') {
         const idObjetivo = argumentos[0]?.replace(/[<@!>]/g, '') || mensaje.author.id;
         const usuario = await cliente.users.fetch(idObjetivo).catch(() => null);
@@ -341,6 +349,7 @@ cliente.on('messageCreate', async mensaje => {
         return mensaje.reply({ embeds: [embed] });
     }
 
+    // ========== HISTORIAL NOMBRES ==========
     if (comando === 'nombres') {
         const idObjetivo = argumentos[0]?.replace(/[<@!>]/g, '') || mensaje.author.id;
         const usuario = await cliente.users.fetch(idObjetivo).catch(() => null);
@@ -354,18 +363,21 @@ cliente.on('messageCreate', async mensaje => {
         return mensaje.reply({ embeds: [crearEmbed('Historial de Nombres', `**Usuario:** <@${idObjetivo}>\n**Cambios en ${config.diasRetencionHistorial} dias:** ${historial.length}\n\n${listaNombres}`)] });
     }
 
+    // ========== LIMPIAR AVATARES ==========
     if (comando === 'limpiar' && argumentos[0]?.toLowerCase() === 'avatares') {
         const idObjetivo = argumentos[1]?.replace(/[<@!>]/g, '') || mensaje.author.id;
         historialAvatares.delete(idObjetivo);
         return mensaje.reply({ embeds: [crearEmbed('Historial Limpiado', `Historial de avatares de <@${idObjetivo}> eliminado.`, '#57F287')] });
     }
 
+    // ========== LIMPIAR NOMBRES ==========
     if (comando === 'limpiar' && argumentos[0]?.toLowerCase() === 'nombres') {
         const idObjetivo = argumentos[1]?.replace(/[<@!>]/g, '') || mensaje.author.id;
         historialNombres.delete(idObjetivo);
         return mensaje.reply({ embeds: [crearEmbed('Historial Limpiado', `Historial de nombres de <@${idObjetivo}> eliminado.`, '#57F287')] });
     }
 
+    // ========== ANTINUKE CONFIG ==========
     if ((comando === 'an' || comando === 'antinuke') && argumentos[0]?.toLowerCase() === 'config') {
         if (!esDueñoServidor(mensaje.author.id, servidor)) return mensaje.reply({ embeds: [crearEmbed('Acceso Denegado', 'Solo el dueno del servidor puede configurar el antinuke.', '#ED4245')] });
         const embed = crearEmbed('Configuracion de Antinuke', 'Solo el dueno del servidor puede modificar estos ajustes.')
@@ -381,12 +393,14 @@ cliente.on('messageCreate', async mensaje => {
         return mensaje.reply({ embeds: [embed] });
     }
 
+    // ========== ANTINUKE ACTIVAR/DESACTIVAR ==========
     if ((comando === 'an' || comando === 'antinuke') && argumentos[0]?.toLowerCase() === 'activar') {
         if (!esDueñoServidor(mensaje.author.id, servidor)) return mensaje.reply({ embeds: [crearEmbed('Acceso Denegado', 'Solo el dueno del servidor puede modificar este ajuste.', '#ED4245')] });
         config.antinuke.activado = !config.antinuke.activado;
         return mensaje.reply({ embeds: [crearEmbed('Antinuke Actualizado', `La proteccion antinuke ha sido ${config.antinuke.activado ? '**activada**' : '**desactivada**'}.`, '#57F287')] });
     }
 
+    // ========== ANTINUKE WL ==========
     if ((comando === 'an' || comando === 'antinuke') && argumentos[0]?.toLowerCase() === 'wl') {
         if (!esDueñoServidor(mensaje.author.id, servidor)) return mensaje.reply({ embeds: [crearEmbed('Acceso Denegado', 'Solo el dueno del servidor puede gestionar la lista blanca.', '#ED4245')] });
         const accion = argumentos[1]?.toLowerCase();
@@ -396,6 +410,7 @@ cliente.on('messageCreate', async mensaje => {
         if (accion === 'quitar') { listaBlanca.delete(idUsuario); return mensaje.reply({ embeds: [crearEmbed('Lista Blanca Actualizada', `<@${idUsuario}> eliminado de la lista blanca.`, '#FEE75C')] }); }
     }
 
+    // ========== ANTINUKE ADMIN ==========
     if ((comando === 'an' || comando === 'antinuke') && argumentos[0]?.toLowerCase() === 'admin') {
         if (!esDueñoServidor(mensaje.author.id, servidor)) return mensaje.reply({ embeds: [crearEmbed('Acceso Denegado', 'Solo el dueno del servidor puede gestionar administradores antinuke.', '#ED4245')] });
         const accion = argumentos[1]?.toLowerCase();
@@ -405,6 +420,7 @@ cliente.on('messageCreate', async mensaje => {
         if (accion === 'quitar') { administradoresAntinuke.delete(idUsuario); return mensaje.reply({ embeds: [crearEmbed('Administrador Actualizado', `<@${idUsuario}> ya no es administrador antinuke.`, '#FEE75C')] }); }
     }
 
+    // ========== VOICE MASTER ==========
     if (comando === 'vc' && argumentos[0]?.toLowerCase() === 'master') {
         if (!mensaje.member.permissions.has(PermissionFlagsBits.ManageChannels)) return mensaje.reply({ embeds: [crearEmbed('Acceso Denegado', 'Permisos insuficientes.', '#ED4245')] });
         const existente = mensaje.guild.channels.cache.find(c => c.name === 'Voice Create' && c.type === ChannelType.GuildVoice);
@@ -413,6 +429,7 @@ cliente.on('messageCreate', async mensaje => {
         return mensaje.reply({ embeds: [crearEmbed('Voice Master', `Panel creado: <#${panel.id}>\nAl unirse al canal, se creara un canal de voz personal automaticamente.`, '#57F287')] });
     }
 
+    // ========== BLOQUEAR CANAL ==========
     if (comando === 'bloquear') {
         if (!mensaje.member.permissions.has(PermissionFlagsBits.ManageChannels)) {
             return mensaje.reply({ embeds: [crearEmbed('Acceso Denegado', 'No tienes permiso para gestionar canales.', '#ED4245')] });
@@ -421,6 +438,7 @@ cliente.on('messageCreate', async mensaje => {
         return mensaje.reply({ embeds: [crearEmbed('Canal Bloqueado', 'Ya no se pueden enviar mensajes en este canal.', '#ED4245')] });
     }
 
+    // ========== DESBLOQUEAR CANAL ==========
     if (comando === 'desbloquear') {
         if (!mensaje.member.permissions.has(PermissionFlagsBits.ManageChannels)) {
             return mensaje.reply({ embeds: [crearEmbed('Acceso Denegado', 'No tienes permiso para gestionar canales.', '#ED4245')] });
@@ -429,6 +447,7 @@ cliente.on('messageCreate', async mensaje => {
         return mensaje.reply({ embeds: [crearEmbed('Canal Desbloqueado', 'Ya se pueden enviar mensajes en este canal.', '#57F287')] });
     }
 
+    // ========== BORRAR MENSAJES ==========
     if (comando === 'c' || comando === 'borrar') {
         if (!mensaje.member.permissions.has(PermissionFlagsBits.ManageMessages)) {
             return mensaje.reply({ embeds: [crearEmbed('Acceso Denegado', 'No tienes permiso para borrar mensajes.', '#ED4245')] });
@@ -442,6 +461,7 @@ cliente.on('messageCreate', async mensaje => {
         return mensaje.reply({ embeds: [crearEmbed('Mensajes Borrados', `Se borraron ${borrados.size} mensajes.`, '#57F287')] });
     }
 
+    // ========== BAN (EXPULSAR) ==========
     if (comando === 'ban') {
         if (!mensaje.member.permissions.has(PermissionFlagsBits.KickMembers)) {
             return mensaje.reply({ embeds: [crearEmbed('Acceso Denegado', 'No tienes permiso para expulsar.', '#ED4245')] });
@@ -458,6 +478,7 @@ cliente.on('messageCreate', async mensaje => {
         return mensaje.reply({ embeds: [crearEmbed('Usuario Expulsado', `${mencion.user.tag} fue expulsado.\nRazon: ${razon}`, '#FEE75C')] });
     }
 
+    // ========== HB (BANEAR PERMANENTE) ==========
     if (comando === 'hb') {
         if (!mensaje.member.permissions.has(PermissionFlagsBits.BanMembers)) {
             return mensaje.reply({ embeds: [crearEmbed('Acceso Denegado', 'No tienes permiso para banear.', '#ED4245')] });
