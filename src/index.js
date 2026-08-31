@@ -242,7 +242,7 @@ cliente.on('messageCreate', async mensaje => {
             .addFields(
                 { name: 'Lista Blanca Duenos (Solo Dueno)', value: `\`${config.prefijo}wl own @Usuario/ID\` — Agregar Dueno\n\`${config.prefijo}wl own lista\` — Ver Duenos\n\`${config.prefijo}wl own quitar @Usuario/ID\` — Quitar Dueno` },
                 { name: 'Lista Blanca Rol2 (Solo Duenos)', value: `\`${config.prefijo}wl r2 agregar @Usuario/ID\` — Dar permiso para dar Rol2\n\`${config.prefijo}wl r2 quitar @Usuario/ID\` — Quitar permiso\n\`${config.prefijo}wl r2 lista\` — Ver lista con permiso` },
-                { name: 'Sistema de Roles', value: `\`${config.prefijo}r @Usuario NombreRol\` — Dar Rol\n\`${config.prefijo}roles\` — Lista de Roles del Servidor\nRol1: ${roles.rol1?.nombre || 'No detectado'}\nRol2 (Protegido): ${roles.rol2?.nombre || 'No detectado'}\nRol3: ${roles.rol3?.nombre || 'No detectado'}\nRol4: ${roles.rol4?.nombre || 'No detectado'}` },
+                { name: 'Sistema de Roles', value: `\`${config.prefijo}r @Usuario NombreRol\` — Dar Rol\n\`${config.prefijo}roles\` — Lista de Roles del Servidor` },
                 { name: 'Historial de Usuarios', value: `\`${config.prefijo}avatares [@Usuario]\` — Ver historial de avatares\n\`${config.prefijo}nombres [@Usuario]\` — Ver historial de nombres\n\`${config.prefijo}limpiar avatares [@Usuario]\` — Borrar historial de avatares\n\`${config.prefijo}limpiar nombres [@Usuario]\` — Borrar historial de nombres` },
                 { name: 'Antinuke y Seguridad (Solo Dueno)', value: `\`${config.prefijo}an config\` — Ver configuracion de Antinuke\n\`${config.prefijo}an activar/desactivar\` — Encender/Apagar proteccion\n\`${config.prefijo}an wl agregar/quitar <ID>\` — Lista Blanca Antinuke\n\`${config.prefijo}an admin agregar/quitar <ID>\` — Administrador Antinuke` },
                 { name: 'Moderacion', value: `\`${config.prefijo}bloquear\` — Bloquear canal actual\n\`${config.prefijo}desbloquear\` — Desbloquear canal\n\`${config.prefijo}c <cantidad>\` — Borrar mensajes (1-100)\n\`${config.prefijo}ban @Usuario [razon]\` — Expulsar del servidor\n\`${config.prefijo}hb @Usuario [razon]\` — Banear permanentemente` },
@@ -278,7 +278,7 @@ cliente.on('messageCreate', async mensaje => {
         }
     }
 
-    // ========== WL R2 (SOLO DUENOS PUEDEN GESTIONAR) ==========
+    // ========== WL R2 ==========
     if (comando === 'wl' && argumentos[0]?.toLowerCase() === 'r2') {
         if (!esDueñoServidor(mensaje.author.id, servidor)) {
             return mensaje.reply({ embeds: [crearEmbed('Acceso Denegado', 'Solo el dueno del servidor puede gestionar la lista blanca de Rol2.', '#ED4245')] });
@@ -322,19 +322,14 @@ cliente.on('messageCreate', async mensaje => {
         return mensaje.reply({ embeds: [crearEmbed('Rol Asignado', `${mencion.user.tag} recibio el rol **${rol.name}**.`, '#57F287')] });
     }
 
-    // ========== VER ROLES ==========
+    // ========== VER ROLES — COMPLETO, SOLO AL USAR ,roles ==========
     if (comando === 'roles') {
         const todosRoles = servidor.roles.cache
             .filter(r => r.id !== servidor.id)
             .sort((a, b) => b.position - a.position)
             .map((r, i) => `${i + 1}. **${r.name}** — \`${r.id}\``)
             .join('\n');
-        const infoRoles = `\n\n**Niveles Detectados Automaticamente:**\n` +
-            `${roles.rol1 ? 'Rol1: **' + roles.rol1.nombre + '**' : 'Rol1: No detectado'}\n` +
-            `${roles.rol2 ? 'Rol2 (Protegido): **' + roles.rol2.nombre + '**' : 'Rol2: No detectado'}\n` +
-            `${roles.rol3 ? 'Rol3: **' + roles.rol3.nombre + '**' : 'Rol3: No detectado'}\n` +
-            `${roles.rol4 ? 'Rol4: **' + roles.rol4.nombre + '**' : 'Rol4: No detectado'}`;
-        return mensaje.reply({ embeds: [crearEmbed('Lista de Roles', todosRoles + infoRoles)] });
+        return mensaje.reply({ embeds: [crearEmbed('Lista de Roles', todosRoles)] });
     }
 
     // ========== HISTORIAL AVATARES ==========
