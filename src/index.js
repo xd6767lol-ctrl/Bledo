@@ -1,493 +1,248 @@
 require('dotenv').config();
-const {
-    Client,
-    GatewayIntentBits,
-    Partials,
-    PermissionFlagsBits,
-    AuditLogEvent,
-    EmbedBuilder,
-    ChannelType
-} = require('discord.js');
+const { Client, GatewayIntentBits, Partials, PermissionFlagsBits, AuditLogEvent, EmbedBuilder, ChannelType, Collection } = require('discord.js');
+const { joinVoiceChannel, getVoiceConnection, VoiceConnectionStatus } = require('@discordjs/voice');
 const express = require('express');
 const app = express();
-const PUERTO = process.env.PORT || 10000;
+const PORT = process.env.PORT || 10000;
 
-app.get('/', (req, res) => res.send('Sistema En Línea'));
-app.listen(PUERTO, '0.0.0.0', () => console.log(`Puerto ${PUERTO} — Servicio Activo`));
+app.get('/', (req, res) => res.send('Sistema En Línea — Estilo Bleed'));
+app.listen(PORT, '0.0.0.0', () => console.log(`Puerto ${PORT} — Servicio Activo`));
 
-const config = {
-    prefijo: ',',
-    rolesPorPagina: 10,
-    diasRetencionHistorial: 7,
-    antinuke: {
-        activado: true,
-        proteccion: { baneos: true, expulsiones: true, canales: true, roles: true, webhooks: true, nombreServidor: true, iconoServidor: true, permisos: true },
-        limites: { baneosPorMinuto: 3, expulsionesPorMinuto: 5, canalesPorMinuto: 3, rolesPorMinuto: 3 },
-        castigo: 'quitar_roles'
-    },
-    vozMaestra: { activado: true, limitePredeterminado: 0, nombreCategoria: 'Canales de Voz' }
-};
-
-const canalesVoz = new Map();
-const contadoresAntinuke = new Map();
-const listaBlanca = new Set();
-const listaDueños = new Set();
-const listaBlancaRol2 = new Set();
-const administradoresAntinuke = new Set();
-const historialAvatares = new Map();
-const historialNombres = new Map();
-
-const cliente = new Client({
+const client = new Client({
     intents: [
-        GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent, GatewayIntentBits.GuildModeration, GatewayIntentBits.GuildVoiceStates,
-        GatewayIntentBits.GuildMessageReactions, GatewayIntentBits.GuildPresences
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildVoiceStates,
+        GatewayIntentBits.GuildBans,
+        GatewayIntentBits.GuildMessageReactions
     ],
-    partials: [Partials.Channel, Partials.Message, Partials.User, Partials.Reaction, Partials.GuildMember]
+    partials: [Partials.Message, Partials.Channel, Partials.Reaction, Partials.GuildMember]
 });
 
-function crearEmbed(titulo, descripcion, color = '#2B2D31') {
-    return new EmbedBuilder()
-        .setColor(color)
-        .setTitle(titulo)
-        .setDescription(descripcion)
-        .setFooter({ text: 'Hecho por chingones' })
-        .setTimestamp();
-}
+const prefix = ',';
+const whitelistOwn = new Set();
+const whitelistR2 = new Set();
+const voiceMasterChannels = new Map();
+const antinukeConfig = { enabled: true, maxChannels: 3, maxRoles: 3, maxBans: 3, maxKicks: 3 };
+const MAX_HORAS = 200000000; // Límite: 200 millones de horas
 
-function esDueñoServidor(idUsuario, servidor) {
-    return idUsuario === servidor.ownerId;
-}
-
-function esDueñoOListaBlanca(idUsuario, servidor) {
-    return esDueñoServidor(idUsuario, servidor) || listaDueños.has(idUsuario);
-}
-
-function puedeDarRol2(idUsuario, servidor) {
-    return esDueñoServidor(idUsuario, servidor) || listaDueños.has(idUsuario) || listaBlancaRol2.has(idUsuario);
-}
-
-function estaEnListaBlanca(idUsuario) {
-    return listaBlanca.has(idUsuario);
-}
-
-function esAdministradorAntinuke(idUsuario) {
-    return administradoresAntinuke.has(idUsuario);
-}
-
-async function obtenerRolesPorNivel(servidor) {
-    const rolesOrdenados = servidor.roles.cache
-        .filter(rol => rol.id !== servidor.id)
-        .sort((a, b) => b.position - a.position)
-        .map(rol => ({ id: rol.id, nombre: rol.name, posicion: rol.position }));
-
+async function getHierarchyRoles(guild) {
+    const roles = [...guild.roles.cache.values()].sort((a, b) => b.position - a.position);
     return {
-        rol1: rolesOrdenados[0] || null,
-        rol2: rolesOrdenados[1] || null,
-        rol3: rolesOrdenados[2] || null,
-        rol4: rolesOrdenados[3] || null,
-        todos: rolesOrdenados
+        rol1: roles[0] || null,
+        rol2: roles[1] || null,
+        rol3: roles[2] || null,
+        rol4: roles[3] || null
     };
 }
 
-function registrarAccion(idUsuario, accion, limite) {
-    const ahora = Date.now();
-    if (!contadoresAntinuke.has(idUsuario)) contadoresAntinuke.set(idUsuario, {});
-    const datosUsuario = contadoresAntinuke.get(idUsuario);
-    if (!datosUsuario[accion]) datosUsuario[accion] = [];
-    datosUsuario[accion] = datosUsuario[accion].filter(tiempo => ahora - tiempo < 60000);
-    datosUsuario[accion].push(ahora);
-    return datosUsuario[accion].length > limite;
-}
+client.on('messageCreate', async message => {
+    if (!message.guild || message.author.bot) return;
+    if (!message.content.startsWith(prefix)) return;
 
-async function castigar(servidor, usuario, razon) {
-    if (usuario.id === servidor.ownerId || listaDueños.has(usuario.id) || estaEnListaBlanca(usuario.id)) return;
-    const miembro = await servidor.members.fetch(usuario.id).catch(() => null);
-    if (!miembro) return;
-    if (config.antinuke.castigo === 'quitar_roles') {
-        const roles = miembro.roles.cache.filter(r => r.id !== servidor.id);
-        await miembro.roles.remove(roles, razon).catch(() => null);
-    } else if (config.antinuke.castigo === 'ban') {
-        await miembro.ban({ reason: razon }).catch(() => null);
-    } else if (config.antinuke.castigo === 'expulsar') {
-        await miembro.kick(razon).catch(() => null);
+    const args = message.content.slice(prefix.length).trim().split(/\s+/);
+    const comando = args.shift()?.toLowerCase();
+    const autor = message.member;
+    const dueno = message.guild.ownerId;
+
+    // ========== ACTIVAR HORAS — BOT AFK EN VC ==========
+    if (comando === 'activar' && args[0] === 'horas') {
+        if (autor.id !== dueno) return message.reply('Solo el dueño del servidor puede usar este comando.');
+        
+        const busqueda = args.slice(1).join(' ');
+        if (!busqueda) return message.reply('Uso: ,activar horas <ID o nombre del canal de voz>');
+
+        const canal = 
+            message.guild.channels.cache.get(busqueda) || 
+            message.guild.channels.cache.find(c => c.name.toLowerCase() === busqueda.toLowerCase() && c.type === ChannelType.GuildVoice);
+
+        if (!canal || canal.type !== ChannelType.GuildVoice) return message.reply('Canal de voz no encontrado.');
+
+        const conexion = joinVoiceChannel({
+            channelId: canal.id,
+            guildId: message.guild.id,
+            adapterCreator: message.guild.voiceAdapterCreator,
+            selfDeaf: false,
+            selfMute: false
+        });
+
+        conexion.on(VoiceConnectionStatus.Ready, () => {
+            message.reply(`Bot conectado a: ${canal.name}\nTiempo máximo: ${MAX_HORAS.toLocaleString()} horas\nSe mantendrá conectado hasta que se use ,desactivar horas o se reinicie el bot.`);
+        });
+
+        conexion.on(VoiceConnectionStatus.Disconnected, () => {
+            setTimeout(() => {
+                if (!getVoiceConnection(message.guild.id)) {
+                    joinVoiceChannel({
+                        channelId: canal.id,
+                        guildId: message.guild.id,
+                        adapterCreator: message.guild.voiceAdapterCreator,
+                        selfDeaf: false,
+                        selfMute: false
+                    });
+                }
+            }, 5000);
+        });
+        return;
     }
-    console.log(`[ANTINUKE] ${usuario.tag} — ${razon}`);
-}
 
-setInterval(() => {
-    const limite = Date.now() - (config.diasRetencionHistorial * 24 * 60 * 60 * 1000);
-    for (const [idUsuario, avatares] of historialAvatares) {
-        historialAvatares.set(idUsuario, avatares.filter(a => a.fecha > limite));
-        if (historialAvatares.get(idUsuario).length === 0) historialAvatares.delete(idUsuario);
-    }
-    for (const [idUsuario, nombres] of historialNombres) {
-        historialNombres.set(idUsuario, nombres.filter(n => n.fecha > limite));
-        if (historialNombres.get(idUsuario).length === 0) historialNombres.delete(idUsuario);
-    }
-}, 60 * 60 * 1000);
-
-cliente.on('ready', () => {
-    console.log(`Conectado como ${cliente.user.tag}`);
-    cliente.user.setActivity({ type: 3, name: 'actividad no autorizada' });
-});
-
-cliente.on('userUpdate', async (usuarioAntiguo, usuarioNuevo) => {
-    if (usuarioAntiguo.avatar !== usuarioNuevo.avatar) {
-        if (!historialAvatares.has(usuarioNuevo.id)) historialAvatares.set(usuarioNuevo.id, []);
-        const historial = historialAvatares.get(usuarioNuevo.id);
-        const limite = Date.now() - (config.diasRetencionHistorial * 24 * 60 * 60 * 1000);
-        const ultimaEntrada = historial[historial.length - 1];
-        const urlAvatarNuevo = usuarioNuevo.displayAvatarURL({ size: 512, dynamic: true });
-        if (!ultimaEntrada || ultimaEntrada.url !== urlAvatarNuevo && Date.now() - ultimaEntrada.fecha > 5000) {
-            historial.push({ url: urlAvatarNuevo, fecha: Date.now() });
-            historialAvatares.set(usuarioNuevo.id, historial.filter(a => a.fecha > limite));
+    // ========== DESACTIVAR HORAS — SACAR BOT DE VC ==========
+    if (comando === 'desactivar' && args[0] === 'horas') {
+        if (autor.id !== dueno) return message.reply('Solo el dueño del servidor puede usar este comando.');
+        const conexion = getVoiceConnection(message.guild.id);
+        if (conexion) {
+            conexion.destroy();
+            return message.reply('Bot desconectado del canal de voz.');
         }
-    }
-    if (usuarioAntiguo.username !== usuarioNuevo.username) {
-        if (!historialNombres.has(usuarioNuevo.id)) historialNombres.set(usuarioNuevo.id, []);
-        const historial = historialNombres.get(usuarioNuevo.id);
-        const limite = Date.now() - (config.diasRetencionHistorial * 24 * 60 * 60 * 1000);
-        const ultimaEntrada = historial[historial.length - 1];
-        if (!ultimaEntrada || ultimaEntrada.nombre !== usuarioNuevo.username && Date.now() - ultimaEntrada.fecha > 5000) {
-            historial.push({ nombre: usuarioNuevo.username, fecha: Date.now() });
-            historialNombres.set(usuarioNuevo.id, historial.filter(n => n.fecha > limite));
-        }
-    }
-});
-
-cliente.on('guildBanAdd', async prohibicion => {
-    if (!config.antinuke.activado) return;
-    const registro = await prohibicion.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.MemberBanAdd }).catch(() => null);
-    const ejecutor = registro?.entries.first()?.executor;
-    if (!ejecutor || ejecutor.bot) return;
-    if (ejecutor.id === prohibicion.guild.ownerId || listaDueños.has(ejecutor.id) || estaEnListaBlanca(ejecutor.id)) return;
-    if (registrarAccion(ejecutor.id, 'baneos', config.antinuke.limites.baneosPorMinuto)) await castigar(prohibicion.guild, ejecutor, 'Limite de baneos alcanzado');
-});
-
-cliente.on('guildMemberRemove', async miembro => {
-    if (!config.antinuke.activado) return;
-    const registro = await miembro.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.MemberKick }).catch(() => null);
-    const entrada = registro?.entries.first();
-    if (!entrada || entrada.target.id !== miembro.id) return;
-    const ejecutor = entrada.executor;
-    if (!ejecutor || ejecutor.bot || ejecutor.id === miembro.guild.ownerId || listaDueños.has(ejecutor.id) || estaEnListaBlanca(ejecutor.id)) return;
-    if (registrarAccion(ejecutor.id, 'expulsiones', config.antinuke.limites.expulsionesPorMinuto)) await castigar(miembro.guild, ejecutor, 'Limite de expulsiones alcanzado');
-});
-
-cliente.on('channelCreate', async canal => {
-    if (!config.antinuke.activado) return;
-    const registro = await canal.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.ChannelCreate }).catch(() => null);
-    const ejecutor = registro?.entries.first()?.executor;
-    if (!ejecutor || ejecutor.bot || ejecutor.id === canal.guild.ownerId || listaDueños.has(ejecutor.id) || estaEnListaBlanca(ejecutor.id)) return;
-    if (registrarAccion(ejecutor.id, 'canales', config.antinuke.limites.canalesPorMinuto)) {
-        await castigar(canal.guild, ejecutor, 'Limite de creacion de canales alcanzado');
-        await canal.delete().catch(() => null);
-    }
-});
-
-cliente.on('channelDelete', async canal => {
-    if (!config.antinuke.activado) return;
-    const registro = await canal.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.ChannelDelete }).catch(() => null);
-    const ejecutor = registro?.entries.first()?.executor;
-    if (!ejecutor || ejecutor.bot || ejecutor.id === canal.guild.ownerId || listaDueños.has(ejecutor.id) || estaEnListaBlanca(ejecutor.id)) return;
-    if (registrarAccion(ejecutor.id, 'canales', config.antinuke.limites.canalesPorMinuto)) await castigar(canal.guild, ejecutor, 'Limite de eliminacion de canales alcanzado');
-});
-
-cliente.on('roleCreate', async rol => {
-    if (!config.antinuke.activado) return;
-    const registro = await rol.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.RoleCreate }).catch(() => null);
-    const ejecutor = registro?.entries.first()?.executor;
-    if (!ejecutor || ejecutor.bot || ejecutor.id === rol.guild.ownerId || listaDueños.has(ejecutor.id) || estaEnListaBlanca(ejecutor.id)) return;
-    if (registrarAccion(ejecutor.id, 'roles', config.antinuke.limites.rolesPorMinuto)) {
-        await castigar(rol.guild, ejecutor, 'Limite de creacion de roles alcanzado');
-        await rol.delete().catch(() => null);
-    }
-});
-
-cliente.on('roleDelete', async rol => {
-    if (!config.antinuke.activado) return;
-    const registro = await rol.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.RoleDelete }).catch(() => null);
-    const ejecutor = registro?.entries.first()?.executor;
-    if (!ejecutor || ejecutor.bot || ejecutor.id === rol.guild.ownerId || listaDueños.has(ejecutor.id) || estaEnListaBlanca(ejecutor.id)) return;
-    await castigar(rol.guild, ejecutor, 'Eliminacion de rol sin permiso');
-});
-
-cliente.on('guildUpdate', async (servidorAntiguo, servidorNuevo) => {
-    if (!config.antinuke.activado) return;
-    const registro = await servidorNuevo.fetchAuditLogs({ limit: 1, type: AuditLogEvent.GuildUpdate }).catch(() => null);
-    const ejecutor = registro?.entries.first()?.executor;
-    if (!ejecutor || ejecutor.bot || ejecutor.id === servidorNuevo.ownerId || listaDueños.has(ejecutor.id) || estaEnListaBlanca(ejecutor.id)) return;
-    if (servidorAntiguo.name !== servidorNuevo.name && config.antinuke.proteccion.nombreServidor) {
-        await servidorNuevo.setName(servidorAntiguo.name).catch(() => null);
-        await castigar(servidorNuevo, ejecutor, 'Cambio de nombre del servidor sin permiso');
-    }
-    if (servidorAntiguo.icon !== servidorNuevo.icon && config.antinuke.proteccion.iconoServidor) {
-        await servidorNuevo.setIcon(servidorAntiguo.iconURL()).catch(() => null);
-        await castigar(servidorNuevo, ejecutor, 'Cambio de icono del servidor sin permiso');
-    }
-});
-
-cliente.on('messageCreate', async mensaje => {
-    if (mensaje.author.bot || !mensaje.guild) return;
-    if (!mensaje.content.startsWith(config.prefijo)) return;
-    const argumentos = mensaje.content.slice(config.prefijo.length).trim().split(/ +/);
-    const comando = argumentos.shift()?.toLowerCase();
-    const servidor = mensaje.guild;
-    const roles = await obtenerRolesPorNivel(servidor);
-
-    // ========== COMANDO HELP / AYUDA ==========
-    if (comando === 'help' || comando === 'ayuda' || comando === 'cmd' || comando === 'comandos') {
-        const embed = crearEmbed('Lista de Comandos', `Prefijo: \`${config.prefijo}\``)
-            .addFields(
-                { name: 'Lista Blanca Duenos (Solo Dueno)', value: `\`${config.prefijo}wl own @Usuario/ID\` — Agregar Dueno\n\`${config.prefijo}wl own lista\` — Ver Duenos\n\`${config.prefijo}wl own quitar @Usuario/ID\` — Quitar Dueno` },
-                { name: 'Lista Blanca Rol2 (Solo Duenos)', value: `\`${config.prefijo}wl r2 agregar @Usuario/ID\` — Dar permiso para dar Rol2\n\`${config.prefijo}wl r2 quitar @Usuario/ID\` — Quitar permiso\n\`${config.prefijo}wl r2 lista\` — Ver lista con permiso` },
-                { name: 'Sistema de Roles', value: `\`${config.prefijo}r @Usuario NombreRol\` — Dar Rol\n\`${config.prefijo}roles\` — Lista de Roles del Servidor` },
-                { name: 'Historial de Usuarios', value: `\`${config.prefijo}avatares [@Usuario]\` — Ver historial de avatares\n\`${config.prefijo}nombres [@Usuario]\` — Ver historial de nombres\n\`${config.prefijo}limpiar avatares [@Usuario]\` — Borrar historial de avatares\n\`${config.prefijo}limpiar nombres [@Usuario]\` — Borrar historial de nombres` },
-                { name: 'Antinuke y Seguridad (Solo Dueno)', value: `\`${config.prefijo}an config\` — Ver configuracion de Antinuke\n\`${config.prefijo}an activar/desactivar\` — Encender/Apagar proteccion\n\`${config.prefijo}an wl agregar/quitar <ID>\` — Lista Blanca Antinuke\n\`${config.prefijo}an admin agregar/quitar <ID>\` — Administrador Antinuke` },
-                { name: 'Moderacion', value: `\`${config.prefijo}bloquear\` — Bloquear canal actual\n\`${config.prefijo}desbloquear\` — Desbloquear canal\n\`${config.prefijo}c <cantidad>\` — Borrar mensajes (1-100)\n\`${config.prefijo}ban @Usuario [razon]\` — Expulsar del servidor\n\`${config.prefijo}hb @Usuario [razon]\` — Banear permanentemente` },
-                { name: 'Canales de Voz', value: `\`${config.prefijo}vc master\` — Crear panel Voice Create` }
-            );
-        return mensaje.reply({ embeds: [embed] });
+        return message.reply('El bot no está conectado a ningún canal de voz.');
     }
 
     // ========== WL OWN ==========
-    if (comando === 'wl' && argumentos[0]?.toLowerCase() === 'own') {
-        if (!esDueñoServidor(mensaje.author.id, servidor)) {
-            return mensaje.reply({ embeds: [crearEmbed('Acceso Denegado', 'Solo el dueno del servidor puede gestionar esto.', '#ED4245')] });
-        }
-        const subComando = argumentos[1]?.toLowerCase();
-        if (!subComando || !['lista', 'quitar'].includes(subComando)) {
-            const idUsuario = subComando?.replace(/[<@!>]/g, '') || argumentos[1]?.replace(/[<@!>]/g, '');
-            if (!idUsuario) return mensaje.reply({ embeds: [crearEmbed('Uso', `\`${config.prefijo}wl own @Usuario/ID\` — Agregar Dueno\n\`${config.prefijo}wl own lista\` — Ver Lista\n\`${config.prefijo}wl own quitar @Usuario/ID\` — Quitar Dueno`)] });
-            if (idUsuario === servidor.ownerId) return mensaje.reply({ embeds: [crearEmbed('Informacion', 'Ese usuario ya es el dueno del servidor.', '#FEE75C')] });
-            listaDueños.add(idUsuario);
-            return mensaje.reply({ embeds: [crearEmbed('Dueno Agregado', `<@${idUsuario}> ha sido agregado como Dueno del servidor.`, '#57F287')] });
-        }
-        if (subComando === 'lista') {
-            if (listaDueños.size === 0) return mensaje.reply({ embeds: [crearEmbed('Lista de Duenos', 'No hay duenos extra registrados.')] });
-            const lista = Array.from(listaDueños).map(id => `<@${id}> — \`${id}\``).join('\n');
-            return mensaje.reply({ embeds: [crearEmbed('Lista de Duenos', `**Dueno del Servidor:** <@${servidor.ownerId}>\n**Duenos Extra:**\n${lista}`)] });
-        }
-        if (subComando === 'quitar') {
-            const idUsuario = argumentos[2]?.replace(/[<@!>]/g, '');
-            if (!idUsuario) return mensaje.reply({ embeds: [crearEmbed('Uso', `\`${config.prefijo}wl own quitar @Usuario/ID\``)] });
-            if (!listaDueños.has(idUsuario)) return mensaje.reply({ embeds: [crearEmbed('Error', 'Ese usuario no esta en la lista de duenos.', '#ED4245')] });
-            listaDueños.delete(idUsuario);
-            return mensaje.reply({ embeds: [crearEmbed('Dueno Quitado', `<@${idUsuario}> ya no es Dueno del servidor.`, '#FEE75C')] });
-        }
+    if (comando === 'wl_add' && args[0] === 'own') {
+        if (autor.id !== dueno && !whitelistOwn.has(autor.id)) return message.reply('Permisos insuficientes.');
+        const usuario = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
+        if (!usuario) return message.reply('Usuario no encontrado.');
+        whitelistOwn.add(usuario.id);
+        return message.reply(`Whitelist OWN asignada a ${usuario.user.tag}`);
     }
 
     // ========== WL R2 ==========
-    if (comando === 'wl' && argumentos[0]?.toLowerCase() === 'r2') {
-        if (!esDueñoServidor(mensaje.author.id, servidor)) {
-            return mensaje.reply({ embeds: [crearEmbed('Acceso Denegado', 'Solo el dueno del servidor puede gestionar la lista blanca de Rol2.', '#ED4245')] });
-        }
-        const accion = argumentos[1]?.toLowerCase();
-        if (accion === 'agregar') {
-            const idUsuario = argumentos[2]?.replace(/[<@!>]/g, '');
-            if (!idUsuario) return mensaje.reply({ embeds: [crearEmbed('Uso', `\`${config.prefijo}wl r2 agregar @Usuario/ID\``)] });
-            listaBlancaRol2.add(idUsuario);
-            return mensaje.reply({ embeds: [crearEmbed('Permiso Otorgado', `<@${idUsuario}> ahora puede dar el Rol2.`, '#57F287')] });
-        }
-        if (accion === 'quitar') {
-            const idUsuario = argumentos[2]?.replace(/[<@!>]/g, '');
-            if (!idUsuario) return mensaje.reply({ embeds: [crearEmbed('Uso', `\`${config.prefijo}wl r2 quitar @Usuario/ID\``)] });
-            listaBlancaRol2.delete(idUsuario);
-            return mensaje.reply({ embeds: [crearEmbed('Permiso Revocado', `<@${idUsuario}> ya no puede dar el Rol2.`, '#FEE75C')] });
-        }
-        if (accion === 'lista') {
-            if (listaBlancaRol2.size === 0) return mensaje.reply({ embeds: [crearEmbed('Lista Blanca Rol2', 'No hay usuarios con permiso para dar Rol2.')] });
-            const lista = Array.from(listaBlancaRol2).map(id => `<@${id}> — \`${id}\``).join('\n');
-            return mensaje.reply({ embeds: [crearEmbed('Lista Blanca Rol2', lista)] });
-        }
-        return mensaje.reply({ embeds: [crearEmbed('Uso', `\`${config.prefijo}wl r2 agregar @Usuario/ID\` — Dar permiso\n\`${config.prefijo}wl r2 quitar @Usuario/ID\` — Quitar permiso\n\`${config.prefijo}wl r2 lista\` — Ver lista`)] });
+    if (comando === 'wl_add' && args[0] === 'r2') {
+        if (!whitelistOwn.has(autor.id) && autor.id !== dueno) return message.reply('Solo Whitelist OWN puede asignar esto.');
+        const usuario = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
+        if (!usuario) return message.reply('Usuario no encontrado.');
+        whitelistR2.add(usuario.id);
+        return message.reply(`Whitelist R2 asignada a ${usuario.user.tag}`);
+    }
+
+    // ========== ROLES ==========
+    if (comando === 'roles') {
+        const roles = [...message.guild.roles.cache.values()].sort((a, b) => b.position - a.position);
+        const embed = new EmbedBuilder()
+            .setTitle('Lista de Roles')
+            .setColor(0x2F3136)
+            .setDescription(roles.map((r, i) => `${i + 1}. ${r.name} — ID: ${r.id}`).join('\n').slice(0, 4000));
+        return message.reply({ embeds: [embed] });
     }
 
     // ========== DAR ROL ==========
     if (comando === 'r') {
-        const mencion = mensaje.mentions.members.first();
-        const nombreRol = argumentos.slice(1).join(' ');
-        if (!mencion || !nombreRol) {
-            return mensaje.reply({ embeds: [crearEmbed('Uso', `\`${config.prefijo}r @Usuario NombreRol\``, '#FEE75C')] });
+        const usuario = message.mentions.members.first() || await message.guild.members.fetch(args[0]).catch(() => null);
+        const nombreRol = args.slice(1).join(' ');
+        if (!usuario || !nombreRol) return message.reply('Uso: ,r <usuario> <nombre del rol>');
+        
+        const rol = message.guild.roles.cache.find(r => r.name.toLowerCase() === nombreRol.toLowerCase());
+        if (!rol) return message.reply('Rol no encontrado.');
+        
+        const jerarquia = await getHierarchyRoles(message.guild);
+        const puedeDar = whitelistR2.has(autor.id) || whitelistOwn.has(autor.id) || autor.id === dueno;
+        
+        if (rol.id === jerarquia.rol2?.id && !puedeDar) {
+            return message.reply('No tienes permiso para asignar este rol.');
         }
-        const rol = servidor.roles.cache.find(r => r.name.toLowerCase() === nombreRol.toLowerCase());
-        if (!rol) {
-            return mensaje.reply({ embeds: [crearEmbed('Error', 'Rol no encontrado.', '#ED4245')] });
-        }
-        if (roles.rol2 && rol.id === roles.rol2.id && !puedeDarRol2(mensaje.author.id, servidor)) {
-            return mensaje.reply({ embeds: [crearEmbed('Acceso Denegado', 'No tienes permiso para dar el Rol2. Requiere lista blanca de Rol2.', '#ED4245')] });
-        }
-        await mencion.roles.add(rol);
-        return mensaje.reply({ embeds: [crearEmbed('Rol Asignado', `${mencion.user.tag} recibio el rol **${rol.name}**.`, '#57F287')] });
+        
+        await usuario.roles.add(rol);
+        return message.reply(`${usuario.user.tag} recibió el rol: ${rol.name}`);
     }
 
-    // ========== VER ROLES — COMPLETO, SOLO AL USAR ,roles ==========
-    if (comando === 'roles') {
-        const todosRoles = servidor.roles.cache
-            .filter(r => r.id !== servidor.id)
-            .sort((a, b) => b.position - a.position)
-            .map((r, i) => `${i + 1}. **${r.name}** — \`${r.id}\``)
-            .join('\n');
-        return mensaje.reply({ embeds: [crearEmbed('Lista de Roles', todosRoles)] });
+    // ========== VC MASTER ==========
+    if (comando === 'vc' && args[0] === 'master') {
+        if (!autor.permissions.has(PermissionFlagsBits.ManageChannels)) return message.reply('Permisos insuficientes.');
+        
+        const canal = await message.guild.channels.create({
+            name: 'Voice Create',
+            type: ChannelType.GuildVoice,
+            permissionOverwrites: [
+                { id: message.guild.id, allow: [PermissionFlagsBits.Connect] }
+            ]
+        });
+        
+        voiceMasterChannels.set(canal.id, true);
+        return message.reply(`Canal de voz creado: ${canal.name}`);
     }
 
-    // ========== HISTORIAL AVATARES ==========
-    if (comando === 'avatars') {
-        const idObjetivo = argumentos[0]?.replace(/[<@!>]/g, '') || mensaje.author.id;
-        const usuario = await cliente.users.fetch(idObjetivo).catch(() => null);
-        if (!usuario) return mensaje.reply({ embeds: [crearEmbed('Error', 'Usuario no encontrado.', '#ED4245')] });
-        const historial = historialAvatares.get(idObjetivo) || [];
-        if (historial.length === 0) return mensaje.reply({ embeds: [crearEmbed('Historial de Avatares', `<@${idObjetivo}> no tiene cambios de avatar registrados en los ultimos ${config.diasRetencionHistorial} dias.`)] });
-        const embed = crearEmbed('Historial de Avatares', `**Usuario:** <@${idObjetivo}>\n**Cambios en ${config.diasRetencionHistorial} dias:** ${historial.length}`);
-        embed.setImage(historial[historial.length - 1].url);
-        return mensaje.reply({ embeds: [embed] });
+    // ========== LOCK / UNLOCK ==========
+    if (comando === 'lock' || comando === 'unlock') {
+        const rolesPermitidos = await getHierarchyRoles(message.guild);
+        const idsPermitidos = [rolesPermitidos.rol1?.id, rolesPermitidos.rol2?.id, rolesPermitidos.rol3?.id, rolesPermitidos.rol4?.id].filter(Boolean);
+        const tienePermiso = autor.roles.cache.some(r => idsPermitidos.includes(r.id)) || autor.id === dueno;
+        if (!tienePermiso) return message.reply('Permisos insuficientes.');
+        
+        const canal = message.channel;
+        const bloquear = comando === 'lock';
+        await canal.permissionOverwrites.edit(message.guild.id, { SendMessages: !bloquear });
+        return message.reply(bloquear ? 'Canal bloqueado — No se pueden enviar mensajes.' : 'Canal desbloqueado — Se pueden enviar mensajes.');
     }
 
-    // ========== HISTORIAL NOMBRES ==========
-    if (comando === 'nombres') {
-        const idObjetivo = argumentos[0]?.replace(/[<@!>]/g, '') || mensaje.author.id;
-        const usuario = await cliente.users.fetch(idObjetivo).catch(() => null);
-        if (!usuario) return mensaje.reply({ embeds: [crearEmbed('Error', 'Usuario no encontrado.', '#ED4245')] });
-        const historial = historialNombres.get(idObjetivo) || [];
-        if (historial.length === 0) return mensaje.reply({ embeds: [crearEmbed('Historial de Nombres', `<@${idObjetivo}> no tiene cambios de nombre registrados en los ultimos ${config.diasRetencionHistorial} dias.`)] });
-        const listaNombres = historial.map((entrada, i) => {
-            const fecha = new Date(entrada.fecha).toLocaleDateString('es-MX');
-            return `\`${i + 1}.\` **${entrada.nombre}** — ${fecha}`;
-        }).join('\n');
-        return mensaje.reply({ embeds: [crearEmbed('Historial de Nombres', `**Usuario:** <@${idObjetivo}>\n**Cambios en ${config.diasRetencionHistorial} dias:** ${historial.length}\n\n${listaNombres}`)] });
-    }
-
-    // ========== LIMPIAR AVATARES ==========
-    if (comando === 'limpiar' && argumentos[0]?.toLowerCase() === 'avatares') {
-        const idObjetivo = argumentos[1]?.replace(/[<@!>]/g, '') || mensaje.author.id;
-        historialAvatares.delete(idObjetivo);
-        return mensaje.reply({ embeds: [crearEmbed('Historial Limpiado', `Historial de avatares de <@${idObjetivo}> eliminado.`, '#57F287')] });
-    }
-
-    // ========== LIMPIAR NOMBRES ==========
-    if (comando === 'limpiar' && argumentos[0]?.toLowerCase() === 'nombres') {
-        const idObjetivo = argumentos[1]?.replace(/[<@!>]/g, '') || mensaje.author.id;
-        historialNombres.delete(idObjetivo);
-        return mensaje.reply({ embeds: [crearEmbed('Historial Limpiado', `Historial de nombres de <@${idObjetivo}> eliminado.`, '#57F287')] });
-    }
-
-    // ========== ANTINUKE CONFIG ==========
-    if ((comando === 'an' || comando === 'antinuke') && argumentos[0]?.toLowerCase() === 'config') {
-        if (!esDueñoServidor(mensaje.author.id, servidor)) return mensaje.reply({ embeds: [crearEmbed('Acceso Denegado', 'Solo el dueno del servidor puede configurar el antinuke.', '#ED4245')] });
-        const embed = crearEmbed('Configuracion de Antinuke', 'Solo el dueno del servidor puede modificar estos ajustes.')
+    // ========== HELP ==========
+    if (comando === 'help' || comando === 'cmd') {
+        const embed = new EmbedBuilder()
+            .setTitle('Lista de Comandos')
+            .setColor(0x2F3136)
             .addFields(
-                { name: 'Estado', value: config.antinuke.activado ? 'Activado' : 'Desactivado', inline: true },
-                { name: 'Baneos', value: config.antinuke.proteccion.baneos ? 'Activado' : 'Desactivado', inline: true },
-                { name: 'Expulsiones', value: config.antinuke.proteccion.expulsiones ? 'Activado' : 'Desactivado', inline: true },
-                { name: 'Canales', value: config.antinuke.proteccion.canales ? 'Activado' : 'Desactivado', inline: true },
-                { name: 'Roles', value: config.antinuke.proteccion.roles ? 'Activado' : 'Desactivado', inline: true },
-                { name: 'Limites', value: `Baneos: ${config.antinuke.limites.baneosPorMinuto}/min\nExpulsiones: ${config.antinuke.limites.expulsionesPorMinuto}/min\nCanales: ${config.antinuke.limites.canalesPorMinuto}/min\nRoles: ${config.antinuke.limites.rolesPorMinuto}/min` },
-                { name: 'Comandos', value: `\`${config.prefijo}an activar/desactivar\` — Cambiar estado\n\`${config.prefijo}an wl agregar/quitar <ID>\` — Lista Blanca\n\`${config.prefijo}an admin agregar/quitar <ID>\` — Administrador Antinuke` }
-            );
-        return mensaje.reply({ embeds: [embed] });
-    }
-
-    // ========== ANTINUKE ACTIVAR/DESACTIVAR ==========
-    if ((comando === 'an' || comando === 'antinuke') && argumentos[0]?.toLowerCase() === 'activar') {
-        if (!esDueñoServidor(mensaje.author.id, servidor)) return mensaje.reply({ embeds: [crearEmbed('Acceso Denegado', 'Solo el dueno del servidor puede modificar este ajuste.', '#ED4245')] });
-        config.antinuke.activado = !config.antinuke.activado;
-        return mensaje.reply({ embeds: [crearEmbed('Antinuke Actualizado', `La proteccion antinuke ha sido ${config.antinuke.activado ? '**activada**' : '**desactivada**'}.`, '#57F287')] });
-    }
-
-    // ========== ANTINUKE WL ==========
-    if ((comando === 'an' || comando === 'antinuke') && argumentos[0]?.toLowerCase() === 'wl') {
-        if (!esDueñoServidor(mensaje.author.id, servidor)) return mensaje.reply({ embeds: [crearEmbed('Acceso Denegado', 'Solo el dueno del servidor puede gestionar la lista blanca.', '#ED4245')] });
-        const accion = argumentos[1]?.toLowerCase();
-        const idUsuario = argumentos[2]?.replace(/[<@!>]/g, '');
-        if (!idUsuario) return mensaje.reply({ embeds: [crearEmbed('Error', 'Proporciona un ID de usuario valido.', '#ED4245')] });
-        if (accion === 'agregar') { listaBlanca.add(idUsuario); return mensaje.reply({ embeds: [crearEmbed('Lista Blanca Actualizada', `<@${idUsuario}> agregado a la lista blanca.`, '#57F287')] }); }
-        if (accion === 'quitar') { listaBlanca.delete(idUsuario); return mensaje.reply({ embeds: [crearEmbed('Lista Blanca Actualizada', `<@${idUsuario}> eliminado de la lista blanca.`, '#FEE75C')] }); }
-    }
-
-    // ========== ANTINUKE ADMIN ==========
-    if ((comando === 'an' || comando === 'antinuke') && argumentos[0]?.toLowerCase() === 'admin') {
-        if (!esDueñoServidor(mensaje.author.id, servidor)) return mensaje.reply({ embeds: [crearEmbed('Acceso Denegado', 'Solo el dueno del servidor puede gestionar administradores antinuke.', '#ED4245')] });
-        const accion = argumentos[1]?.toLowerCase();
-        const idUsuario = argumentos[2]?.replace(/[<@!>]/g, '');
-        if (!idUsuario) return mensaje.reply({ embeds: [crearEmbed('Error', 'Proporciona un ID de usuario valido.', '#ED4245')] });
-        if (accion === 'agregar') { administradoresAntinuke.add(idUsuario); return mensaje.reply({ embeds: [crearEmbed('Administrador Actualizado', `<@${idUsuario}> ahora es administrador antinuke.`, '#57F287')] }); }
-        if (accion === 'quitar') { administradoresAntinuke.delete(idUsuario); return mensaje.reply({ embeds: [crearEmbed('Administrador Actualizado', `<@${idUsuario}> ya no es administrador antinuke.`, '#FEE75C')] }); }
-    }
-
-    // ========== VOICE MASTER ==========
-    if (comando === 'vc' && argumentos[0]?.toLowerCase() === 'master') {
-        if (!mensaje.member.permissions.has(PermissionFlagsBits.ManageChannels)) return mensaje.reply({ embeds: [crearEmbed('Acceso Denegado', 'Permisos insuficientes.', '#ED4245')] });
-        const existente = mensaje.guild.channels.cache.find(c => c.name === 'Voice Create' && c.type === ChannelType.GuildVoice);
-        if (existente) return mensaje.reply({ embeds: [crearEmbed('Voice Master', `El panel ya existe: <#${existente.id}>`)] });
-        const panel = await mensaje.guild.channels.create({ name: 'Voice Create', type: ChannelType.GuildVoice });
-        return mensaje.reply({ embeds: [crearEmbed('Voice Master', `Panel creado: <#${panel.id}>\nAl unirse al canal, se creara un canal de voz personal automaticamente.`, '#57F287')] });
-    }
-
-    // ========== BLOQUEAR CANAL ==========
-    if (comando === 'bloquear') {
-        if (!mensaje.member.permissions.has(PermissionFlagsBits.ManageChannels)) {
-            return mensaje.reply({ embeds: [crearEmbed('Acceso Denegado', 'No tienes permiso para gestionar canales.', '#ED4245')] });
-        }
-        await mensaje.channel.permissionOverwrites.edit(servidor.id, { SendMessages: false });
-        return mensaje.reply({ embeds: [crearEmbed('Canal Bloqueado', 'Ya no se pueden enviar mensajes en este canal.', '#ED4245')] });
-    }
-
-    // ========== DESBLOQUEAR CANAL ==========
-    if (comando === 'desbloquear') {
-        if (!mensaje.member.permissions.has(PermissionFlagsBits.ManageChannels)) {
-            return mensaje.reply({ embeds: [crearEmbed('Acceso Denegado', 'No tienes permiso para gestionar canales.', '#ED4245')] });
-        }
-        await mensaje.channel.permissionOverwrites.edit(servidor.id, { SendMessages: null });
-        return mensaje.reply({ embeds: [crearEmbed('Canal Desbloqueado', 'Ya se pueden enviar mensajes en este canal.', '#57F287')] });
-    }
-
-    // ========== BORRAR MENSAJES ==========
-    if (comando === 'c' || comando === 'borrar') {
-        if (!mensaje.member.permissions.has(PermissionFlagsBits.ManageMessages)) {
-            return mensaje.reply({ embeds: [crearEmbed('Acceso Denegado', 'No tienes permiso para borrar mensajes.', '#ED4245')] });
-        }
-        const cantidad = parseInt(argumentos[0]) || 5;
-        if (cantidad < 1 || cantidad > 100) {
-            return mensaje.reply({ embeds: [crearEmbed('Error', 'Usa un numero entre 1 y 100.', '#ED4245')] });
-        }
-        await mensaje.delete();
-        const borrados = await mensaje.channel.bulkDelete(cantidad, true);
-        return mensaje.reply({ embeds: [crearEmbed('Mensajes Borrados', `Se borraron ${borrados.size} mensajes.`, '#57F287')] });
-    }
-
-    // ========== BAN (EXPULSAR) ==========
-    if (comando === 'ban') {
-        if (!mensaje.member.permissions.has(PermissionFlagsBits.KickMembers)) {
-            return mensaje.reply({ embeds: [crearEmbed('Acceso Denegado', 'No tienes permiso para expulsar.', '#ED4245')] });
-        }
-        const mencion = mensaje.mentions.members.first();
-        if (!mencion) {
-            return mensaje.reply({ embeds: [crearEmbed('Uso', `\`${config.prefijo}ban @Usuario [razon]\``, '#FEE75C')] });
-        }
-        if (mencion.permissions.has(PermissionFlagsBits.Administrator)) {
-            return mensaje.reply({ embeds: [crearEmbed('Error', 'No puedes expulsar a un administrador.', '#ED4245')] });
-        }
-        const razon = argumentos.slice(1).join(' ') || 'Sin razon';
-        await mencion.kick(razon);
-        return mensaje.reply({ embeds: [crearEmbed('Usuario Expulsado', `${mencion.user.tag} fue expulsado.\nRazon: ${razon}`, '#FEE75C')] });
-    }
-
-    // ========== HB (BANEAR PERMANENTE) ==========
-    if (comando === 'hb') {
-        if (!mensaje.member.permissions.has(PermissionFlagsBits.BanMembers)) {
-            return mensaje.reply({ embeds: [crearEmbed('Acceso Denegado', 'No tienes permiso para banear.', '#ED4245')] });
-        }
-        const mencion = mensaje.mentions.members.first();
-        if (!mencion) {
-            return mensaje.reply({ embeds: [crearEmbed('Uso', `\`${config.prefijo}hb @Usuario [razon]\``, '#FEE75C')] });
-        }
-        const razon = argumentos.slice(1).join(' ') || 'Sin razon';
-        await mencion.ban({ reason: razon });
-        return mensaje.reply({ embeds: [crearEmbed('Usuario Baneado', `${mencion.user.tag} fue baneado.\nRazon: ${razon}`, '#ED4245')] });
+                { name: 'Sistema General', value: '`,help` — Muestra esta lista\n`,roles` — Lista de roles del servidor' },
+                { name: 'Gestión de Roles', value: '`,r <usuario> <rol>` — Asignar rol\n`,wl_add own <usuario>` — Asignar Whitelist OWN\n`,wl_add r2 <usuario>` — Asignar Whitelist R2' },
+                { name: 'Canales y Voz', value: '`,vc master` — Crear canal de voz dinámico\n`,activar horas <canal>` — Bot AFK en VC (máx. 200M horas)\n`,desactivar horas` — Sacar bot del VC\n`,lock` — Bloquear canal\n`,unlock` — Desbloquear canal' },
+                { name: 'Seguridad', value: 'Antinuke activo por defecto — Protección de canales, roles, baneos y más' }
+            )
+            .setFooter({ text: 'Made by chingones' });
+        return message.reply({ embeds: [embed] });
     }
 });
 
-cliente.login(process.env.TOKEN)
-    .then(() => console.log('Bot En Linea — Sistema Completo Activado'))
-    .catch(error => console.log(`Error de inicio de sesion: ${error.message}`));
+// ========== VOICE MASTER — CREAR CANAL AL ENTRAR ==========
+client.on('voiceStateUpdate', async (estadoAnterior, estadoNuevo) => {
+    if (estadoNuevo.channelId && voiceMasterChannels.has(estadoNuevo.channelId) && !estadoAnterior.channelId) {
+        const miembro = estadoNuevo.member;
+        const canalPadre = estadoNuevo.channel.parentId || null;
+
+        const canalNuevo = await estadoNuevo.guild.channels.create({
+            name: `${miembro.user.username} — Channel`,
+            type: ChannelType.GuildVoice,
+            parent: canalPadre,
+            permissionOverwrites: [
+                { id: miembro.id, allow: [PermissionFlagsBits.ManageChannels, PermissionFlagsBits.MoveMembers, PermissionFlagsBits.Connect] },
+                { id: estadoNuevo.guild.id, allow: [PermissionFlagsBits.Connect] }
+            ]
+        });
+
+        await miembro.voice.setChannel(canalNuevo.id);
+        canalNuevo.setRateLimitPerUser(3);
+    }
+
+    if (estadoAnterior.channel && estadoAnterior.channel.name.includes('— Channel') && estadoAnterior.channel.members.size === 0) {
+        setTimeout(async () => {
+            if (estadoAnterior.channel.members.size === 0) {
+                await estadoAnterior.channel.delete().catch(() => {});
+            }
+        }, 5000);
+    }
+});
+
+// ========== ANTINUKE — PROTECCIÓN DE ROLES ==========
+client.on('guildMemberUpdate', async (miembroAntiguo, miembroNuevo) => {
+    if (!antinukeConfig.enabled) return;
+    const dueno = miembroNuevo.guild.ownerId;
+    if (miembroNuevo.id === dueno) return;
+
+    const rolesAntiguos = miembroAntiguo.roles.cache;
+    const rolesNuevos = miembroNuevo.roles.cache;
+    const rolesAgregados = rolesNuevos.filter(r => !rolesAntiguos.has(r.id));
+
+    if (rolesAgregados.size > 0) {
+        const jerarquia = await getHierarchyRoles(miembroNuevo.guild);
+        const rolProtegido = rolesAgregados.has(jerarquia.rol2?.id);
+        if (rolProtegido && !whitelistR2.has(miembroNuevo.id) && !whitelistOwn.has(miembroNuevo.id)) {
+            await miembroNuevo.roles.remove(jerarquia.rol2.id);
+            const rolesUsuario = [...miembroNuevo.roles.cache.keys()];
+            for (const id of rolesUsuario) {
+                const rol = miembroNuevo.guild.roles.cache.get(id);
+                if (rol && rol.position >= jerarquia.rol1.position) await miembroNuevo.roles.remove(rol);
+            }
+        }
+    }
+});
+
+client.login(process.env.TOKEN);
