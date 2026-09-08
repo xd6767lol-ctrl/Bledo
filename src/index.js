@@ -10,7 +10,7 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds]
 });
 
-const BOT_TOKEN = 'MTUzODEwMzc1NjIyMTA1NTAwNg.GBJZ_M.vnK52KU1lpAZv8W-cde4iNJmkafpuI1550FySA';
+const BOT_TOKEN = 
 const LOG_CHANNEL_ID = '1546753534186365019';
 
 // Base de datos temporal para correlacionar IPs con usuarios
